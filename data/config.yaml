@@ -1,0 +1,23 @@
+telegram:
+  bot_token: 8977222054:AAEquVv37zbWICyeIWOUItyc1S1GMVfclfQ
+sonarr:
+  base_url: http://100.69.226.85:8989
+  api_token: 4945efb05d1a461eb92e948a4bacddd1
+radarr:
+  base_url: http://radarr:7878
+  api_token: c905f805a80b4d939a28602892066460
+runtime:
+  admin_password: Kk4str4s.
+  session_secret: K39FLlkalfgj2i
+defaults:
+  series_root_folder: /downloads/Series/
+  movies_root_folder: /downloads/Peliculas/
+  series_quality_profile_id: 1
+  movies_quality_profile_id: 1
+  series_default_resolution: 1080p
+  series_default_audio: multi
+  movies_default_resolution: 1080p
+  movies_default_audio: multi
+  series_quality_profiles: {}
+  movies_quality_profiles: {}
+  series_language_profiles: {}

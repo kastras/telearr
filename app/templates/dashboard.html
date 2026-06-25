@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TeleArr Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>TeleArr Dashboard</h1>
+    <a href="/logout">Cerrar sesion</a>
+  </header>
+
+  {% if message %}
+    <div class="flash">{{ message }}</div>
+  {% endif %}
+
+  <section>
+    <h2>Estado del bot Telegram</h2>
+    <p>Enabled: {{ bot_runtime.enabled }}</p>
+    <p>Running: {{ bot_runtime.running }}</p>
+    <p>Last error: {{ bot_runtime.last_error or 'none' }}</p>
+  </section>
+
+  <section>
+    <h2>Clientes pendientes</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Telegram ID</th>
+          <th>Usuario</th>
+          <th>Token</th>
+          <th>Caduca</th>
+          <th>Accion</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in pending %}
+        <tr>
+          <td>{{ c.telegram_user_id }}</td>
+          <td>{{ c.username or c.first_name }}</td>
+          <td>{{ c.token }}</td>
+          <td>{{ c.expires_at }}</td>
+          <td>
+            <form method="post" action="/clients/{{ c.telegram_user_id }}/approve">
+              <input type="hidden" name="token" value="{{ c.token }}" />
+              <button type="submit">Aprobar</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Clientes</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Telegram ID</th>
+          <th>Usuario</th>
+          <th>Aprobado</th>
+          <th>Bloqueado</th>
+          <th>Accion</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in clients %}
+        <tr>
+          <td>{{ c.telegram_user_id }}</td>
+          <td>{{ c.username or c.first_name }}</td>
+          <td>{{ c.approved }}</td>
+          <td>{{ c.blocked }}</td>
+          <td>
+            {% if c.blocked %}
+              <form method="post" action="/clients/{{ c.telegram_user_id }}/unblock"><button type="submit">Desbloquear</button></form>
+            {% else %}
+              <form method="post" action="/clients/{{ c.telegram_user_id }}/block"><button type="submit">Bloquear</button></form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Ultimas 30 busquedas</h2>
+    <table>
+      <thead><tr><th>Fecha</th><th>Telegram ID</th><th>Tipo</th><th>Query</th></tr></thead>
+      <tbody>
+      {% for s in searches %}
+        <tr><td>{{ s.created_at }}</td><td>{{ s.telegram_user_id }}</td><td>{{ s.media_type }}</td><td>{{ s.query }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Ultimas 30 actividades</h2>
+    <table>
+      <thead><tr><th>Fecha</th><th>Telegram ID</th><th>Accion</th><th>Detalle</th></tr></thead>
+      <tbody>
+      {% for a in activities %}
+        <tr><td>{{ a.created_at }}</td><td>{{ a.telegram_user_id }}</td><td>{{ a.action }}</td><td>{{ a.details }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Configuracion YAML</h2>
+    <form method="post" action="/config/save">
+      <textarea name="config_yaml" rows="24">{{ config_yaml }}</textarea>
+      <button type="submit">Guardar configuracion</button>
+    </form>
+  </section>
+</body>
+</html>
