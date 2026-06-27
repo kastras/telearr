@@ -1,0 +1,27 @@
+services:
+  telearr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: telearr
+    ports:
+      - "4545:4545"
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - SONARR_URL=${SONARR_URL}
+      - SONARR_API_TOKEN=${SONARR_API_TOKEN}
+      - RADARR_URL=${RADARR_URL}
+      - RADARR_API_TOKEN=${RADARR_API_TOKEN}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - SERIES_ROOT_FOLDER=${SERIES_ROOT_FOLDER}
+      - MOVIES_ROOT_FOLDER=${MOVIES_ROOT_FOLDER}
+      - SERIES_QUALITY_PROFILE_ID=${SERIES_QUALITY_PROFILE_ID:-1}
+      - MOVIES_QUALITY_PROFILE_ID=${MOVIES_QUALITY_PROFILE_ID:-1}
+      - SERIES_DEFAULT_RESOLUTION=${SERIES_DEFAULT_RESOLUTION:-1080p}
+      - SERIES_DEFAULT_AUDIO=${SERIES_DEFAULT_AUDIO:-multi}
+      - MOVIES_DEFAULT_RESOLUTION=${MOVIES_DEFAULT_RESOLUTION:-1080p}
+      - MOVIES_DEFAULT_AUDIO=${MOVIES_DEFAULT_AUDIO:-multi}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
