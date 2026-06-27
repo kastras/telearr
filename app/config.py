@@ -38,6 +38,7 @@ class DefaultMediaConfig:
     series_quality_profiles: dict[str, int] = field(default_factory=dict)
     movies_quality_profiles: dict[str, int] = field(default_factory=dict)
     series_language_profiles: dict[str, int] = field(default_factory=dict)
+    series_add_tags: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -59,6 +60,21 @@ class ConfigManager:
     def config(self) -> AppConfig:
         with self._lock:
             return self._config
+
+    @staticmethod
+    def _parse_int_list(raw: str) -> list[int]:
+        if not raw.strip():
+            return []
+        values: list[int] = []
+        for token in raw.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                values.append(int(token))
+            except ValueError:
+                continue
+        return values
 
     def _load_or_init(self) -> AppConfig:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,6 +106,7 @@ class ConfigManager:
                 series_default_audio=env.get("SERIES_DEFAULT_AUDIO", "multi"),
                 movies_default_resolution=env.get("MOVIES_DEFAULT_RESOLUTION", "1080p"),
                 movies_default_audio=env.get("MOVIES_DEFAULT_AUDIO", "multi"),
+                series_add_tags=self._parse_int_list(env.get("SERIES_ADD_TAGS", "")),
             ),
         )
         self._write_yaml(cfg)
@@ -98,12 +115,25 @@ class ConfigManager:
     def _read_yaml(self, raw: str) -> AppConfig:
         data = yaml.safe_load(raw) or {}
 
+        # Sanitize defaults to ensure series_add_tags only contains integers
+        defaults_data = data.get("defaults", {})
+        if "series_add_tags" in defaults_data:
+            raw_tags = defaults_data["series_add_tags"]
+            if isinstance(raw_tags, list):
+                # Filter to only keep integer values, silently drop non-integers
+                defaults_data["series_add_tags"] = [
+                    int(tag) for tag in raw_tags 
+                    if isinstance(tag, int) or (isinstance(tag, str) and tag.isdigit())
+                ]
+            else:
+                defaults_data["series_add_tags"] = []
+
         return AppConfig(
             telegram=TelegramConfig(**data.get("telegram", {})),
             sonarr=ArrServiceConfig(**data.get("sonarr", {})),
             radarr=ArrServiceConfig(**data.get("radarr", {})),
             runtime=AppRuntimeConfig(**data.get("runtime", {})),
-            defaults=DefaultMediaConfig(**data.get("defaults", {})),
+            defaults=DefaultMediaConfig(**defaults_data),
         )
 
     def _write_yaml(self, cfg: AppConfig) -> None:

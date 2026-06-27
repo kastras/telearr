@@ -4,7 +4,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from .arr_clients import ArrClientError, RadarrClient, SonarrClient
 from .config import ConfigManager
@@ -24,9 +31,28 @@ class TelegramBotService:
         app.add_handler(CommandHandler("help", self.on_help))
         app.add_handler(CommandHandler("serie", self.on_serie))
         app.add_handler(CommandHandler("pelicula", self.on_pelicula))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_free_text))
         app.add_handler(CallbackQueryHandler(self.on_callback))
+        app.add_error_handler(self.error_handler)
 
         return app
+
+    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Manejador de errores para el bot."""
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error al procesar update: {context.error}", exc_info=context.error)
+        
+        message = self._safe_reply_target(update)
+        if message:
+            try:
+                error_msg = str(context.error)[:200]
+                await message.reply_text(
+                    f"❌ Error: {error_msg}\n\n"
+                    f"Asegúrate de que Sonarr/Radarr estén accesibles y las URLs sean correctas."
+                )
+            except Exception as e:
+                logger.error(f"Error al enviar mensaje de error: {e}")
 
     @staticmethod
     def _safe_reply_target(update: Update):
@@ -79,6 +105,181 @@ class TelegramBotService:
             defaults.movies_quality_profile_id,
         )
         return resolution, audio, quality_profile_id
+
+    @staticmethod
+    def _resolution_options(profile_map: dict[str, int], default_resolution: str) -> list[str]:
+        values = {k.split("|", 1)[0].strip().lower() for k in profile_map if "|" in k}
+        if default_resolution:
+            values.add(default_resolution.lower())
+        if not values:
+            values = {"1080p"}
+
+        order = {"4k": 0, "2160p": 0, "1080p": 1, "720p": 2, "480p": 3}
+        return sorted(values, key=lambda x: (order.get(x, 99), x))
+
+    async def _run_series_search_flow(
+        self,
+        message,
+        context: ContextTypes.DEFAULT_TYPE,
+        user_id: int,
+        query_text: str,
+        force_api: bool = False,
+    ) -> None:
+        cfg = self.config_manager.config
+        sonarr = SonarrClient(cfg.sonarr.base_url, cfg.sonarr.api_token)
+        defaults = cfg.defaults
+
+        self.client_service.log_search(user_id, "serie", query_text)
+
+        if not force_api:
+            local_results = await sonarr.search_local(query_text)
+            if local_results:
+                msg = "📺 Encontré esto en tu Sonarr:\n\n"
+                keyboard: list[list[InlineKeyboardButton]] = []
+                for s in local_results[:10]:
+                    series_id = s.get("id")
+                    title = s.get("title", "Desconocida")
+                    status = s.get("status", "unknown")
+                    seasons = s.get("seasons", [])
+                    total_eps = 0
+                    downloaded_eps = 0
+                    for season in seasons:
+                        stats = season.get("statistics", {})
+                        total_eps += int(stats.get("episodeCount", 0) or 0)
+                        downloaded_eps += int(stats.get("episodeFileCount", 0) or 0)
+
+                    msg += f"• {title} ({status}) - {downloaded_eps}/{total_eps} episodios\n"
+                    if series_id is not None:
+                        keyboard.append([
+                            InlineKeyboardButton(
+                                text=f"Ver estado: {title[:28]}",
+                                callback_data=f"sinfo|{series_id}",
+                            )
+                        ])
+
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            text="Buscar una serie nueva con este nombre",
+                            callback_data="tgnew|serie",
+                        )
+                    ]
+                )
+                await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+                self.client_service.log_activity(user_id, "serie.local", query_text)
+                return
+
+        resolution = defaults.series_default_resolution.lower()
+        audio = defaults.series_default_audio.lower()
+        results = await sonarr.search(query_text)
+        top = [x for x in results if x.get("tvdbId")][:8]
+
+        if not top:
+            await message.reply_text("No encontré resultados en Sonarr local ni en la API.")
+            return
+
+        lines = [f"• {x.get('title')} | tvdbId={x.get('tvdbId')}" for x in top]
+        msg = (
+            f"Resultados de serie para '{query_text}' (calidad por defecto: {resolution}/{audio}):\n\n"
+            + "\n".join(lines)
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    text=f"Agregar: {x.get('title')[:24]}",
+                    callback_data=f"sadd|{x.get('tvdbId')}|{resolution}|{audio}",
+                ),
+                InlineKeyboardButton(
+                    text="Cambiar calidad",
+                    callback_data=f"sq|{x.get('tvdbId')}",
+                ),
+            ]
+            for x in top
+        ]
+
+        await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        self.client_service.log_activity(user_id, "serie.buscar", query_text)
+
+    async def _run_movie_search_flow(
+        self,
+        message,
+        context: ContextTypes.DEFAULT_TYPE,
+        user_id: int,
+        query_text: str,
+        force_api: bool = False,
+    ) -> None:
+        cfg = self.config_manager.config
+        radarr = RadarrClient(cfg.radarr.base_url, cfg.radarr.api_token)
+        defaults = cfg.defaults
+
+        self.client_service.log_search(user_id, "pelicula", query_text)
+
+        if not force_api:
+            local_results = await radarr.search_local(query_text)
+            if local_results:
+                msg = "🎬 Encontré esto en tu Radarr:\n\n"
+                keyboard: list[list[InlineKeyboardButton]] = []
+                for m in local_results[:10]:
+                    movie_id = m.get("id")
+                    title = m.get("title", "Desconocida")
+                    year = m.get("year", "")
+                    status = m.get("status", "unknown")
+                    has_file = bool(m.get("hasFile", False))
+                    file_status = "descargada" if has_file else "sin archivo"
+
+                    msg += f"• {title} ({year}) - {status} - {file_status}\n"
+                    if movie_id is not None:
+                        keyboard.append([
+                            InlineKeyboardButton(
+                                text=f"Ver estado: {title[:28]}",
+                                callback_data=f"minfo|{movie_id}",
+                            )
+                        ])
+
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            text="Buscar una película nueva con este nombre",
+                            callback_data="tgnew|pelicula",
+                        )
+                    ]
+                )
+                await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+                self.client_service.log_activity(user_id, "pelicula.local", query_text)
+                return
+
+        resolution = defaults.movies_default_resolution.lower()
+        audio = defaults.movies_default_audio.lower()
+        results = await radarr.search(query_text)
+        top = [x for x in results if x.get("tmdbId")][:8]
+
+        if not top:
+            await message.reply_text("No encontré resultados en Radarr local ni en la API.")
+            return
+
+        lines = [f"• {x.get('title')} | tmdbId={x.get('tmdbId')}" for x in top]
+        msg = (
+            f"Resultados de película para '{query_text}' (calidad por defecto: {resolution}/{audio}):\n\n"
+            + "\n".join(lines)
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    text=f"Agregar: {x.get('title')[:24]}",
+                    callback_data=f"madd|{x.get('tmdbId')}|{resolution}|{audio}",
+                ),
+                InlineKeyboardButton(
+                    text="Cambiar calidad",
+                    callback_data=f"mq|{x.get('tmdbId')}",
+                ),
+            ]
+            for x in top
+        ]
+
+        await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        self.client_service.log_activity(user_id, "pelicula.buscar", query_text)
 
     async def _check_access(self, update: Update) -> tuple[bool, int]:
         user = update.effective_user
@@ -133,6 +334,7 @@ class TelegramBotService:
 
     async def on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
+            "También puedes escribir directamente un nombre (ej: dark o interstellar) y te preguntaré si es serie o película.\n\n"
             "Comandos:\n"
             "/serie buscar <texto> [res=1080p] [audio=multi]\n"
             "/serie agregar <tvdbId> [res=1080p] [audio=multi]\n"
@@ -143,6 +345,31 @@ class TelegramBotService:
             "/pelicula estado <radarrId>\n"
             "/pelicula borrar <radarrId>\n\n"
             "Tambien puedes usar botones tras /serie buscar y /pelicula buscar."
+        )
+
+    async def on_free_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        ok, _ = await self._check_access(update)
+        if not ok:
+            return
+
+        message = self._safe_reply_target(update)
+        if not message:
+            return
+
+        query_text = (message.text or "").strip()
+        if not query_text:
+            return
+
+        context.user_data["pending_query"] = query_text
+        keyboard = [
+            [
+                InlineKeyboardButton("📺 Es una serie", callback_data="tgtype|serie"),
+                InlineKeyboardButton("🎬 Es una película", callback_data="tgtype|pelicula"),
+            ]
+        ]
+        await message.reply_text(
+            f"Entendido: '{query_text}'. ¿Qué quieres buscar?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
     async def on_serie(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -245,6 +472,7 @@ class TelegramBotService:
                     quality_profile_id=quality_profile_id,
                     root_folder_path=cfg.defaults.series_root_folder,
                     language_profile_id=language_profile_id,
+                    tags=cfg.defaults.series_add_tags,
                 )
                 self.client_service.log_activity(
                     user_id,
@@ -289,6 +517,17 @@ class TelegramBotService:
                     # Agrupar botones en filas de 2
                     for i in range(0, len(season_buttons), 2):
                         keyboard.append(season_buttons[i:i+2])
+
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            text="🔎 Buscar episodios faltantes",
+                            callback_data=f"ssearch|{series_id}",
+                        )
+                    ]
+                )
+
+                msg += "\n¿Quieres buscar algún episodio? Usa los botones."
                 
                 await update.message.reply_text(
                     msg,
@@ -468,6 +707,104 @@ class TelegramBotService:
 
         cfg = self.config_manager.config
         parts = query.data.split("|")
+
+        if len(parts) == 2 and parts[0] == "tgtype":
+            media_type = parts[1]
+            query_text = (context.user_data.get("pending_query") or "").strip()
+            if not query_text:
+                await query.edit_message_text("No tengo texto pendiente. Escríbeme primero el nombre.")
+                return
+
+            await query.edit_message_text(f"Buscando '{query_text}' como {media_type}...")
+            try:
+                target_message = query.message
+                if not target_message:
+                    return
+
+                if media_type == "serie":
+                    await self._run_series_search_flow(target_message, context, user_id, query_text, force_api=False)
+                elif media_type == "pelicula":
+                    await self._run_movie_search_flow(target_message, context, user_id, query_text, force_api=False)
+                else:
+                    await target_message.reply_text("Tipo no válido")
+            except ArrClientError as exc:
+                if query.message:
+                    await query.message.reply_text(f"Error: {exc}")
+            return
+
+        if len(parts) == 2 and parts[0] == "tgnew":
+            media_type = parts[1]
+            query_text = (context.user_data.get("pending_query") or "").strip()
+            if not query_text:
+                await query.edit_message_text("No tengo texto pendiente. Escríbeme primero el nombre.")
+                return
+
+            await query.edit_message_text(f"Buscando en API nuevas opciones para '{query_text}'...")
+            try:
+                target_message = query.message
+                if not target_message:
+                    return
+
+                if media_type == "serie":
+                    await self._run_series_search_flow(target_message, context, user_id, query_text, force_api=True)
+                elif media_type == "pelicula":
+                    await self._run_movie_search_flow(target_message, context, user_id, query_text, force_api=True)
+                else:
+                    await target_message.reply_text("Tipo no válido")
+            except ArrClientError as exc:
+                if query.message:
+                    await query.message.reply_text(f"Error: {exc}")
+            return
+
+        if len(parts) == 2 and parts[0] in ("sq", "mq"):
+            try:
+                raw_id = int(parts[1])
+            except ValueError:
+                await query.edit_message_text("ID inválido")
+                return
+
+            defaults = cfg.defaults
+
+            if parts[0] == "sq":
+                audio = defaults.series_default_audio.lower()
+                resolutions = self._resolution_options(
+                    defaults.series_quality_profiles,
+                    defaults.series_default_resolution,
+                )
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            text=f"{res}/{audio}",
+                            callback_data=f"sadd|{raw_id}|{res}|{audio}",
+                        )
+                    ]
+                    for res in resolutions
+                ]
+                await query.edit_message_text(
+                    "Elige calidad para la serie:",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+                return
+
+            audio = defaults.movies_default_audio.lower()
+            resolutions = self._resolution_options(
+                defaults.movies_quality_profiles,
+                defaults.movies_default_resolution,
+            )
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        text=f"{res}/{audio}",
+                        callback_data=f"madd|{raw_id}|{res}|{audio}",
+                    )
+                ]
+                for res in resolutions
+            ]
+            await query.edit_message_text(
+                "Elige calidad para la película:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+            return
         
         # Manejo de menús de acciones
         if len(parts) == 2 and parts[0] in ("smenu", "mmenu"):
@@ -495,7 +832,7 @@ class TelegramBotService:
             return
         
         # Manejo de info y borrar de series/películas locales
-        if len(parts) == 2 and parts[0] in ("sinfo", "sdel", "minfo", "mdel"):
+        if len(parts) == 2 and parts[0] in ("sinfo", "sdel", "minfo", "mdel", "ssearch", "sep"):
             try:
                 action = parts[0]
                 item_id = int(parts[1])
@@ -511,6 +848,7 @@ class TelegramBotService:
                     
                     msg = f"📺 {title}\nEstado: {status}\nMonitoreada: {'Sí' if monitored else 'No'}\n\n"
                     
+                    keyboard = []
                     if seasons:
                         msg += "Temporadas:\n"
                         for season in sorted(seasons, key=lambda x: x.get('seasonNumber', 0)):
@@ -518,8 +856,29 @@ class TelegramBotService:
                             episode_count = season.get('statistics', {}).get('episodeCount', 0)
                             downloaded = season.get('statistics', {}).get('episodeFileCount', 0)
                             msg += f"  S{season_num:02d}: {downloaded}/{episode_count}\n"
-                    
-                    await query.edit_message_text(msg)
+
+                            keyboard.append([
+                                InlineKeyboardButton(
+                                    text=f"Temporada S{season_num:02d}",
+                                    callback_data=f"sstate|{item_id}|{season_num}",
+                                )
+                            ])
+
+                    keyboard.append(
+                        [
+                            InlineKeyboardButton(
+                                text="🔎 Buscar episodios faltantes",
+                                callback_data=f"ssearch|{item_id}",
+                            )
+                        ]
+                    )
+
+                    msg += "\n¿Quieres buscar algún episodio? Usa los botones."
+
+                    await query.edit_message_text(
+                        msg,
+                        reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
+                    )
                     return
                 
                 elif action == "sdel":
@@ -560,6 +919,26 @@ class TelegramBotService:
                     self.client_service.log_activity(user_id, "pelicula.borrar", f"movieId={item_id}")
                     await query.edit_message_text(f"❌ Película '{title}' eliminada")
                     return
+
+                elif action == "ssearch":
+                    sonarr = SonarrClient(cfg.sonarr.base_url, cfg.sonarr.api_token)
+                    series = await sonarr.get(item_id)
+                    await sonarr.search_series_missing(item_id)
+                    title = series.get('title', 'Serie')
+                    self.client_service.log_activity(user_id, "serie.search_missing", f"seriesId={item_id}")
+                    await query.edit_message_text(
+                        f"🔎 Búsqueda de episodios faltantes lanzada para '{title}'."
+                    )
+                    return
+
+                elif action == "sep":
+                    sonarr = SonarrClient(cfg.sonarr.base_url, cfg.sonarr.api_token)
+                    await sonarr.search_episode(item_id)
+                    self.client_service.log_activity(user_id, "serie.search_episode", f"episodeId={item_id}")
+                    await query.edit_message_text(
+                        "🔎 Búsqueda del episodio solicitada. Revisa la cola de Sonarr."
+                    )
+                    return
                     
             except (ValueError, ArrClientError) as exc:
                 await query.edit_message_text(f"Error: {exc}")
@@ -588,11 +967,43 @@ class TelegramBotService:
                 
                 msg = f"📺 {title} - Temporada {season_num}\n"
                 msg += f"Episodios: {downloaded}/{episode_count}\n\n"
-                
-                # Mostrar info de episodios si hay monitoreo
-                msg += "Usa /serie estado <id> para ver mas detalles"
-                
-                await query.edit_message_text(msg)
+
+                episodes = await sonarr.list_episodes(series_id=series_id, season_number=season_num)
+                missing = [e for e in episodes if not e.get("hasFile")]
+
+                keyboard = []
+                if missing:
+                    msg += "Episodios faltantes:\n"
+                    for ep in missing[:10]:
+                        ep_num = int(ep.get("episodeNumber", 0) or 0)
+                        ep_title = ep.get("title", "Sin título")
+                        ep_id = ep.get("id")
+                        msg += f"- E{ep_num:02d} {ep_title}\n"
+                        if ep_id is not None:
+                            keyboard.append(
+                                [
+                                    InlineKeyboardButton(
+                                        text=f"Buscar S{season_num:02d}E{ep_num:02d}",
+                                        callback_data=f"sep|{ep_id}",
+                                    )
+                                ]
+                            )
+                else:
+                    msg += "No hay episodios faltantes en esta temporada."
+
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            text="🔎 Buscar episodios faltantes (serie)",
+                            callback_data=f"ssearch|{series_id}",
+                        )
+                    ]
+                )
+
+                await query.edit_message_text(
+                    msg,
+                    reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
+                )
             except (ValueError, ArrClientError) as exc:
                 await query.edit_message_text(f"Error: {exc}")
             return
@@ -612,6 +1023,7 @@ class TelegramBotService:
                         quality_profile_id=quality_profile_id,
                         root_folder_path=cfg.defaults.series_root_folder,
                         language_profile_id=language_profile_id,
+                        tags=cfg.defaults.series_add_tags,
                     )
                     self.client_service.log_activity(
                         user_id,

@@ -4,7 +4,7 @@ sonarr:
   base_url: http://100.69.226.85:8989
   api_token: 4945efb05d1a461eb92e948a4bacddd1
 radarr:
-  base_url: http://radarr:7878
+  base_url: http://100.69.226.85:7878
   api_token: c905f805a80b4d939a28602892066460
 runtime:
   admin_password: Kk4str4s.
@@ -21,3 +21,5 @@ defaults:
   series_quality_profiles: {}
   movies_quality_profiles: {}
   series_language_profiles: {}
+  series_add_tags:
+  - spanish

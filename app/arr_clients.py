@@ -35,11 +35,38 @@ class BaseArrClient:
             return None
         return res.json()
 
+    async def _request_versioned(
+        self,
+        method: str,
+        path_without_api_prefix: str,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> Any:
+        """Prueba v5 y, si no existe endpoint, cae a v3 automáticamente."""
+        last_error: ArrClientError | None = None
+        for version in ("v5", "v3"):
+            try:
+                return await self._request(
+                    method,
+                    f"/api/{version}{path_without_api_prefix}",
+                    params=params,
+                    json_body=json_body,
+                )
+            except ArrClientError as exc:
+                last_error = exc
+                if version == "v5" and (str(exc).startswith("404:") or str(exc).startswith("405:")):
+                    continue
+                raise
+
+        if last_error:
+            raise last_error
+        raise ArrClientError("No se pudo ejecutar la petición")
+
 
 class SonarrClient(BaseArrClient):
     async def list_all(self) -> list[dict[str, Any]]:
         """Lista todas las series agregadas localmente."""
-        data = await self._request("GET", "/api/v3/series")
+        data = await self._request_versioned("GET", "/series")
         return data if isinstance(data, list) else []
 
     async def search_local(self, term: str) -> list[dict[str, Any]]:
@@ -49,17 +76,34 @@ class SonarrClient(BaseArrClient):
         return [s for s in all_series if term_lower in s.get("title", "").lower()]
 
     async def search(self, term: str) -> list[dict[str, Any]]:
-        data = await self._request("GET", "/api/v3/series/lookup", params={"term": term})
+        data = await self._request_versioned("GET", "/series/lookup", params={"term": term})
         return data if isinstance(data, list) else []
 
     async def get(self, series_id: int) -> dict[str, Any]:
-        return await self._request("GET", f"/api/v3/series/{series_id}")
+        return await self._request_versioned("GET", f"/series/{series_id}")
+
+    async def list_episodes(self, series_id: int, season_number: int | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"seriesId": series_id}
+        if season_number is not None:
+            params["seasonNumber"] = season_number
+        data = await self._request_versioned("GET", "/episode", params=params)
+        return data if isinstance(data, list) else []
+
+    async def search_episode(self, episode_id: int) -> dict[str, Any]:
+        payload = {"name": "EpisodeSearch", "episodeIds": [episode_id]}
+        data = await self._request_versioned("POST", "/command", json_body=payload)
+        return data if isinstance(data, dict) else {}
+
+    async def search_series_missing(self, series_id: int) -> dict[str, Any]:
+        payload = {"name": "SeriesSearch", "seriesId": series_id}
+        data = await self._request_versioned("POST", "/command", json_body=payload)
+        return data if isinstance(data, dict) else {}
 
     async def delete(self, series_id: int) -> None:
-        await self._request(
+        await self._request_versioned(
             "DELETE",
-            f"/api/v3/series/{series_id}",
-            params={"deleteFiles": "false", "addImportExclusion": "false"},
+            f"/series/{series_id}",
+            params={"deleteFiles": "false", "addImportListExclusion": "false"},
         )
 
     async def add(
@@ -68,6 +112,7 @@ class SonarrClient(BaseArrClient):
         quality_profile_id: int,
         root_folder_path: str,
         language_profile_id: int | None = None,
+        tags: list[int] | None = None,
     ) -> dict[str, Any]:
         lookup = await self.search(f"tvdb:{tvdb_id}")
         if not lookup:
@@ -86,13 +131,15 @@ class SonarrClient(BaseArrClient):
         }
         if language_profile_id is not None:
             payload["languageProfileId"] = language_profile_id
-        return await self._request("POST", "/api/v3/series", json_body=payload)
+        if tags:
+            payload["tags"] = tags
+        return await self._request_versioned("POST", "/series", json_body=payload)
 
 
 class RadarrClient(BaseArrClient):
     async def list_all(self) -> list[dict[str, Any]]:
         """Lista todas las películas agregadas localmente."""
-        data = await self._request("GET", "/api/v3/movie")
+        data = await self._request_versioned("GET", "/movie")
         return data if isinstance(data, list) else []
 
     async def search_local(self, term: str) -> list[dict[str, Any]]:
@@ -102,16 +149,16 @@ class RadarrClient(BaseArrClient):
         return [m for m in all_movies if term_lower in m.get("title", "").lower()]
 
     async def search(self, term: str) -> list[dict[str, Any]]:
-        data = await self._request("GET", "/api/v3/movie/lookup", params={"term": term})
+        data = await self._request_versioned("GET", "/movie/lookup", params={"term": term})
         return data if isinstance(data, list) else []
 
     async def get(self, movie_id: int) -> dict[str, Any]:
-        return await self._request("GET", f"/api/v3/movie/{movie_id}")
+        return await self._request_versioned("GET", f"/movie/{movie_id}")
 
     async def delete(self, movie_id: int) -> None:
-        await self._request(
+        await self._request_versioned(
             "DELETE",
-            f"/api/v3/movie/{movie_id}",
+            f"/movie/{movie_id}",
             params={"deleteFiles": "false", "addImportListExclusion": "false"},
         )
 
@@ -131,4 +178,4 @@ class RadarrClient(BaseArrClient):
             "monitored": True,
             "addOptions": {"searchForMovie": True},
         }
-        return await self._request("POST", "/api/v3/movie", json_body=payload)
+        return await self._request_versioned("POST", "/movie", json_body=payload)
