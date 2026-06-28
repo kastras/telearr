@@ -9,6 +9,14 @@ class ArrClientError(Exception):
     pass
 
 
+class ArrAlreadyExistsError(ArrClientError):
+    def __init__(self, media_type: str, media_id: int | None, title: str):
+        self.media_type = media_type
+        self.media_id = media_id
+        self.title = title
+        super().__init__(f"La {media_type} ya está agregada: {title}")
+
+
 class BaseArrClient:
     def __init__(self, base_url: str, api_token: str):
         self.base_url = base_url.rstrip("/")
@@ -137,6 +145,15 @@ class SonarrClient(BaseArrClient):
         language_profile_id: int | None = None,
         tags: list[str] | None = None,
     ) -> dict[str, Any]:
+        existing = await self.list_all()
+        current = next((x for x in existing if x.get("tvdbId") == tvdb_id), None)
+        if current:
+            raise ArrAlreadyExistsError(
+                media_type="serie",
+                media_id=current.get("id"),
+                title=current.get("title", "Desconocida"),
+            )
+
         lookup = await self.search(f"tvdb:{tvdb_id}")
         if not lookup:
             raise ArrClientError("No se encontro la serie por tvdbId")
@@ -188,6 +205,15 @@ class RadarrClient(BaseArrClient):
         )
 
     async def add(self, tmdb_id: int, quality_profile_id: int, root_folder_path: str, tags: list[str] | None = None) -> dict[str, Any]:
+        existing = await self.list_all()
+        current = next((x for x in existing if x.get("tmdbId") == tmdb_id), None)
+        if current:
+            raise ArrAlreadyExistsError(
+                media_type="película",
+                media_id=current.get("id"),
+                title=current.get("title", "Desconocida"),
+            )
+
         lookup = await self.search(f"tmdb:{tmdb_id}")
         if not lookup:
             raise ArrClientError("No se encontro la pelicula por tmdbId")

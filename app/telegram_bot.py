@@ -14,7 +14,7 @@ from telegram.ext import (
     filters,
 )
 
-from .arr_clients import ArrClientError, RadarrClient, SonarrClient
+from .arr_clients import ArrAlreadyExistsError, ArrClientError, RadarrClient, SonarrClient
 from .config import ConfigManager
 from .services import ClientService
 
@@ -290,7 +290,7 @@ class TelegramBotService:
 
         # Buscar en API
         results = await sonarr.search(query_text)
-        top = [x for x in results if x.get("tvdbId")][:8]
+        top = [x for x in results if x.get("tvdbId")][:16]
 
         if not top:
             await message.reply_text("No encontré resultados en Sonarr local ni en la API.")
@@ -472,7 +472,7 @@ class TelegramBotService:
 
         # Buscar en API
         results = await radarr.search(query_text)
-        top = [x for x in results if x.get("tmdbId")][:8]
+        top = [x for x in results if x.get("tmdbId")][:16]
 
         if not top:
             await message.reply_text("No encontré resultados en Radarr local ni en la API.")
@@ -646,7 +646,7 @@ class TelegramBotService:
                 
                 # Si no hay locales, busca en la API
                 results = await sonarr.search(value)
-                top = [x for x in results if x.get("tvdbId")][:8]
+                top = [x for x in results if x.get("tvdbId")][:16]
                 lines = [f"{x.get('title')} | tvdbId={x.get('tvdbId')}" for x in top]
                 msg = (
                     f"Resultados en API (res={resolution}, audio={audio}):\n"
@@ -823,7 +823,7 @@ class TelegramBotService:
                 
                 # Si no hay locales, busca en la API
                 results = await radarr.search(value)
-                top = [x for x in results if x.get("tmdbId")][:8]
+                top = [x for x in results if x.get("tmdbId")][:16]
                 lines = [f"{x.get('title')} | tmdbId={x.get('tmdbId')}" for x in top]
                 msg = (
                     f"Resultados en API (res={resolution}, audio={audio}):\n"
@@ -1036,7 +1036,8 @@ class TelegramBotService:
                     ]
                     for res in resolutions
                 ]
-                await query.edit_message_text(
+                await query.answer()
+                await query.message.reply_text(
                     "Elige calidad para la serie:",
                     reply_markup=InlineKeyboardMarkup(keyboard),
                 )
@@ -1056,7 +1057,8 @@ class TelegramBotService:
                 ]
                 for res in resolutions
             ]
-            await query.edit_message_text(
+            await query.answer()
+            await query.message.reply_text(
                 "Elige calidad para la película:",
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
@@ -1286,8 +1288,9 @@ class TelegramBotService:
                         "serie.agregar",
                         f"tvdbId={tvdb_id} res={resolution} audio={audio} q={quality_profile_id}",
                     )
-                    await query.edit_message_text(
-                        f"Serie agregada: {data.get('title')} (res={resolution}, audio={audio})"
+                    await query.answer()
+                    await query.message.reply_text(
+                        f"✅ Serie agregada: {data.get('title')} (res={resolution}, audio={audio})"
                     )
                     return
 
@@ -1306,16 +1309,36 @@ class TelegramBotService:
                         "pelicula.agregar",
                         f"tmdbId={tmdb_id} res={resolution} audio={audio} q={quality_profile_id}",
                     )
-                    await query.edit_message_text(
-                        f"Pelicula agregada: {data.get('title')} (res={resolution}, audio={audio})"
+                    await query.answer()
+                    await query.message.reply_text(
+                        f"✅ Película agregada: {data.get('title')} (res={resolution}, audio={audio})"
                     )
                     return
 
-                await query.edit_message_text("Accion desconocida")
+                await query.answer("Acción desconocida")
             except ValueError:
-                await query.edit_message_text("El valor recibido no es valido")
+                await query.answer("El valor recibido no es válido")
+            except ArrAlreadyExistsError as exc:
+                await query.answer("Ya existe en tu biblioteca")
+                keyboard = None
+                if exc.media_id is not None:
+                    callback = "sinfo" if exc.media_type == "serie" else "minfo"
+                    keyboard = InlineKeyboardMarkup(
+                        [[InlineKeyboardButton(text="📊 Ver estado", callback_data=f"{callback}|{exc.media_id}")]]
+                    )
+                await query.message.reply_text(
+                    f"ℹ️ {exc.title} ya está agregado.",
+                    reply_markup=keyboard,
+                )
             except ArrClientError as exc:
-                await query.edit_message_text(f"Error: {exc}")
+                err = str(exc)
+                err_lower = err.lower()
+                if "already been added" in err_lower or "ya está agregada" in err_lower or "ya esta agregada" in err_lower:
+                    await query.answer("Ya existe en tu biblioteca")
+                    await query.message.reply_text("ℹ️ Ese título ya está agregado en tu biblioteca.")
+                else:
+                    await query.answer("No se pudo agregar")
+                    await query.message.reply_text(f"Error al agregar: {err[:300]}")
             return
         
-        await query.edit_message_text("Accion invalida")
+        await query.answer("Acción inválida")
