@@ -62,6 +62,29 @@ class BaseArrClient:
             raise last_error
         raise ArrClientError("No se pudo ejecutar la petición")
 
+    async def list_tags(self) -> list[dict[str, Any]]:
+        """Lista todos los tags disponibles."""
+        data = await self._request_versioned("GET", "/tag")
+        return data if isinstance(data, list) else []
+
+    async def resolve_tag_names_to_ids(self, tag_names: list[str]) -> list[int]:
+        """Resuelve nombres de tags a sus IDs. Si no encuentra un nombre, lo ignora."""
+        if not tag_names:
+            return []
+        
+        tags = await self.list_tags()
+        tag_map = {tag.get("label", "").lower(): tag.get("id") for tag in tags}
+        
+        ids: list[int] = []
+        for name in tag_names:
+            name_lower = name.lower()
+            if name_lower in tag_map:
+                ids.append(tag_map[name_lower])
+            elif name.isdigit():
+                # Si es un número, usarlo directamente
+                ids.append(int(name))
+        return ids
+
 
 class SonarrClient(BaseArrClient):
     async def list_all(self) -> list[dict[str, Any]]:
@@ -112,7 +135,7 @@ class SonarrClient(BaseArrClient):
         quality_profile_id: int,
         root_folder_path: str,
         language_profile_id: int | None = None,
-        tags: list[int] | None = None,
+        tags: list[str] | None = None,
     ) -> dict[str, Any]:
         lookup = await self.search(f"tvdb:{tvdb_id}")
         if not lookup:
@@ -132,7 +155,9 @@ class SonarrClient(BaseArrClient):
         if language_profile_id is not None:
             payload["languageProfileId"] = language_profile_id
         if tags:
-            payload["tags"] = tags
+            tag_ids = await self.resolve_tag_names_to_ids(tags)
+            if tag_ids:
+                payload["tags"] = tag_ids
         return await self._request_versioned("POST", "/series", json_body=payload)
 
 
@@ -162,7 +187,7 @@ class RadarrClient(BaseArrClient):
             params={"deleteFiles": "false", "addImportListExclusion": "false"},
         )
 
-    async def add(self, tmdb_id: int, quality_profile_id: int, root_folder_path: str) -> dict[str, Any]:
+    async def add(self, tmdb_id: int, quality_profile_id: int, root_folder_path: str, tags: list[str] | None = None) -> dict[str, Any]:
         lookup = await self.search(f"tmdb:{tmdb_id}")
         if not lookup:
             raise ArrClientError("No se encontro la pelicula por tmdbId")
@@ -178,4 +203,8 @@ class RadarrClient(BaseArrClient):
             "monitored": True,
             "addOptions": {"searchForMovie": True},
         }
+        if tags:
+            tag_ids = await self.resolve_tag_names_to_ids(tags)
+            if tag_ids:
+                payload["tags"] = tag_ids
         return await self._request_versioned("POST", "/movie", json_body=payload)
