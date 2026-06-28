@@ -304,6 +304,125 @@ class TelegramBotService:
         await self._show_series_carousel_result(message, search_id, top, 0, context)
         self.client_service.log_activity(user_id, "serie.buscar", query_text)
 
+    async def _show_movie_carousel_result(
+        self,
+        message,
+        search_id: str,
+        results: list[dict[str, Any]],
+        current_index: int,
+        context: ContextTypes.DEFAULT_TYPE,
+        edit_existing: bool = False,
+    ) -> None:
+        """Muestra un resultado de película en formato carrusel con imagen y navegación."""
+        import httpx
+        
+        if not results or current_index >= len(results):
+            return
+
+        result = results[current_index]
+        tmdb_id = result.get("tmdbId")
+        title = result.get("title", "Desconocida")
+        year = result.get("year", "")
+        overview = result.get("overview", "Sin descripción")[:300]
+        images = result.get("images", [])
+        
+        # Buscar imagen poster
+        poster_url = None
+        for img in images:
+            if img.get("coverType") == "poster":
+                poster_url = img.get("url")
+                break
+        
+        cfg = self.config_manager.config
+        defaults = cfg.defaults
+        resolution = defaults.movies_default_resolution.lower()
+        audio = defaults.movies_default_audio.lower()
+
+        # Construir URL completa de la imagen si es relativa
+        if poster_url and not poster_url.startswith(("http://", "https://")):
+            poster_url = f"{cfg.radarr.base_url}{poster_url}"
+
+        # Construir mensaje
+        year_str = f" ({year})" if year else ""
+        header = f"🎬 {title}{year_str}\n"
+        msg = header + overview + f"\n\n({current_index + 1}/{len(results)})"
+
+        # Construir teclado
+        keyboard = []
+
+        # Primera fila: anterior/siguiente
+        nav_buttons = []
+        if current_index > 0:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="◀️ Anterior",
+                    callback_data=f"mnav|{search_id}|prev",
+                )
+            )
+        if current_index < len(results) - 1:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="Siguiente ▶️",
+                    callback_data=f"mnav|{search_id}|next",
+                )
+            )
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+
+        # Segunda fila: agregar
+        keyboard.append([
+            InlineKeyboardButton(
+                text="✅ Agregar",
+                callback_data=f"madd|{tmdb_id}|{resolution}|{audio}",
+            )
+        ])
+
+        # Tercera fila: cambiar calidad
+        keyboard.append([
+            InlineKeyboardButton(
+                text="⚙️ Calidad",
+                callback_data=f"mq|{tmdb_id}",
+            )
+        ])
+
+        # Guardar índice en context
+        context.user_data[f"movie_search_{search_id}_index"] = current_index
+
+        # Intentar enviar con imagen
+        if poster_url:
+            try:
+                # Agregar API key como parámetro de query para MediaCoverProxy
+                url_with_auth = poster_url
+                if "?" in poster_url:
+                    url_with_auth = f"{poster_url}&apikey={cfg.radarr.api_token}"
+                else:
+                    url_with_auth = f"{poster_url}?apikey={cfg.radarr.api_token}"
+                
+                # Descargar imagen
+                async with httpx.AsyncClient(timeout=10) as client:
+                    res = await client.get(url_with_auth)
+                    res.raise_for_status()
+                    image_data = res.content
+                
+                if edit_existing:
+                    from telegram import InputMediaPhoto
+                    media = InputMediaPhoto(media=image_data, caption=msg, parse_mode=None)
+                    await message.edit_media(media, reply_markup=InlineKeyboardMarkup(keyboard))
+                else:
+                    await message.reply_photo(
+                        photo=image_data,
+                        caption=msg,
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                    )
+            except Exception as exc:
+                # Si hay error con la imagen, mostrar solo texto
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Error al descargar imagen {poster_url}: {exc}")
+                await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+
     async def _run_movie_search_flow(
         self,
         message,
@@ -314,7 +433,6 @@ class TelegramBotService:
     ) -> None:
         cfg = self.config_manager.config
         radarr = RadarrClient(cfg.radarr.base_url, cfg.radarr.api_token)
-        defaults = cfg.defaults
 
         self.client_service.log_search(user_id, "pelicula", query_text)
 
@@ -352,8 +470,7 @@ class TelegramBotService:
                 self.client_service.log_activity(user_id, "pelicula.local", query_text)
                 return
 
-        resolution = defaults.movies_default_resolution.lower()
-        audio = defaults.movies_default_audio.lower()
+        # Buscar en API
         results = await radarr.search(query_text)
         top = [x for x in results if x.get("tmdbId")][:8]
 
@@ -361,27 +478,12 @@ class TelegramBotService:
             await message.reply_text("No encontré resultados en Radarr local ni en la API.")
             return
 
-        lines = [f"• {x.get('title')} | tmdbId={x.get('tmdbId')}" for x in top]
-        msg = (
-            f"Resultados de película para '{query_text}' (calidad por defecto: {resolution}/{audio}):\n\n"
-            + "\n".join(lines)
-        )
+        # Guardar resultados en context y mostrar carrusel
+        search_id = str(uuid.uuid4())
+        context.user_data[f"movie_search_{search_id}"] = top
+        context.user_data[f"movie_search_{search_id}_index"] = 0
 
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    text=f"Agregar: {x.get('title')[:24]}",
-                    callback_data=f"madd|{x.get('tmdbId')}|{resolution}|{audio}",
-                ),
-                InlineKeyboardButton(
-                    text="Cambiar calidad",
-                    callback_data=f"mq|{x.get('tmdbId')}",
-                ),
-            ]
-            for x in top
-        ]
-
-        await message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        await self._show_movie_carousel_result(message, search_id, top, 0, context)
         self.client_service.log_activity(user_id, "pelicula.buscar", query_text)
 
     async def _check_access(self, update: Update) -> tuple[bool, int]:
@@ -881,6 +983,31 @@ class TelegramBotService:
             
             try:
                 await self._show_series_carousel_result(query.message, search_id, results, current_index, context, edit_existing=True)
+            except Exception as exc:
+                await query.edit_message_text(f"Error al mostrar resultado: {exc}")
+            return
+
+        # Navegación de carrusel de películas
+        if len(parts) == 3 and parts[0] == "mnav":
+            search_id = parts[1]
+            direction = parts[2]
+            
+            results = context.user_data.get(f"movie_search_{search_id}")
+            current_index = context.user_data.get(f"movie_search_{search_id}_index", 0)
+            
+            if not results:
+                await query.edit_message_text("Los resultados de búsqueda expiraron.")
+                return
+            
+            if direction == "prev" and current_index > 0:
+                current_index -= 1
+            elif direction == "next" and current_index < len(results) - 1:
+                current_index += 1
+            
+            context.user_data[f"movie_search_{search_id}_index"] = current_index
+            
+            try:
+                await self._show_movie_carousel_result(query.message, search_id, results, current_index, context, edit_existing=True)
             except Exception as exc:
                 await query.edit_message_text(f"Error al mostrar resultado: {exc}")
             return
