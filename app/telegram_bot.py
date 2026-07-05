@@ -57,6 +57,16 @@ class TelegramBotService:
             except Exception as e:
                 logger.error(f"Error al enviar mensaje de error: {e}")
 
+    @staticmethod
+    def _format_size(size_bytes: float) -> str:
+        if not size_bytes:
+            return "0 B"
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if abs(size_bytes) < 1024:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024
+        return f"{size_bytes:.1f} PB"
+
     def _resolve_series_profiles(self, options: dict[str, str]) -> tuple[str, str, int, int | None]:
         cfg = self.config_manager.config
         defaults = cfg.defaults
@@ -848,6 +858,12 @@ class TelegramBotService:
             "ssearch": self._cb_local_info,
             "sep": self._cb_local_info,
             "sstate": self._cb_season_state,
+            "srel": self._cb_series_releases,
+            "srelnav": self._cb_series_releases_nav,
+            "sgrb": self._cb_grab_series_release,
+            "mrel": self._cb_movie_releases,
+            "mrelnav": self._cb_movie_releases_nav,
+            "mgrb": self._cb_grab_movie_release,
             "sadd": self._cb_add_media,
             "madd": self._cb_add_media,
         }
@@ -1127,7 +1143,19 @@ class TelegramBotService:
                     f"Archivo: {file_path}\n"
                 )
 
-                await query.edit_message_text(msg)
+                keyboard = [
+                    [
+                        InlineKeyboardButton(
+                            text="📦 Ver releases",
+                            callback_data=f"mrel|{item_id}",
+                        )
+                    ]
+                ]
+
+                await query.edit_message_text(
+                    msg,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
                 return
 
             elif action == "mdel":
@@ -1203,8 +1231,8 @@ class TelegramBotService:
                         keyboard.append(
                             [
                                 InlineKeyboardButton(
-                                    text=f"Buscar S{season_num:02d}E{ep_num:02d}",
-                                    callback_data=f"sep|{ep_id}",
+                                    text=f"🔍 Releases S{season_num:02d}E{ep_num:02d}",
+                                    callback_data=f"srel|{series_id}|{ep_id}|{season_num}|{ep_num}",
                                 )
                             ]
                         )
@@ -1226,6 +1254,291 @@ class TelegramBotService:
             )
         except (ValueError, ArrClientError) as exc:
             await query.edit_message_text(f"Error: {exc}")
+
+    async def _show_release_list(
+        self,
+        query,
+        search_id: str,
+        releases: list[dict[str, Any]],
+        page: int,
+        title: str,
+        media_type: str,
+    ) -> None:
+        per_page = 10
+        total_pages = max(1, (len(releases) + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        start = page * per_page
+        end = start + per_page
+        page_releases = releases[start:end]
+
+        lines = [f"📦 Releases para {title}:\n"]
+        for i, rel in enumerate(page_releases, start=1):
+            rel_title = rel.get("title", "Desconocido")
+            if len(rel_title) > 70:
+                rel_title = rel_title[:67] + "..."
+            languages = rel.get("languages", [])
+            lang_str = ", ".join(l.get("name", "?") for l in languages) if languages else "?"
+            size_str = self._format_size(rel.get("size", 0))
+            seeders = rel.get("seeders", 0)
+            global_index = start + i - 1
+            lines.append(f"\n{global_index + 1}. {rel_title}")
+            lines.append(f"   🌐 {lang_str} | 📦 {size_str} | 👤 {seeders}")
+
+        lines.append(f"\n\nPágina {page + 1}/{total_pages}")
+        msg = "".join(lines)
+
+        keyboard: list[list[InlineKeyboardButton]] = []
+        num_row: list[InlineKeyboardButton] = []
+        for i, rel in enumerate(page_releases):
+            global_index = start + i
+            prefix = "sgrb" if media_type == "serie" else "mgrb"
+            num_row.append(
+                InlineKeyboardButton(
+                    text=str(global_index + 1),
+                    callback_data=f"{prefix}|{search_id}|{global_index}",
+                )
+            )
+            if len(num_row) == 5:
+                keyboard.append(num_row)
+                num_row = []
+        if num_row:
+            keyboard.append(num_row)
+
+        nav_row = []
+        if page > 0:
+            prefix = "srelnav" if media_type == "serie" else "mrelnav"
+            nav_row.append(
+                InlineKeyboardButton(text="◀️ Anterior", callback_data=f"{prefix}|{search_id}|prev")
+            )
+        if page < total_pages - 1:
+            prefix = "srelnav" if media_type == "serie" else "mrelnav"
+            nav_row.append(
+                InlineKeyboardButton(text="Siguiente ▶️", callback_data=f"{prefix}|{search_id}|next")
+            )
+        if nav_row:
+            keyboard.append(nav_row)
+
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def _cb_series_releases(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+        query = update.callback_query
+        cfg = self.config_manager.config
+        parts = query.data.split("|")
+        series_id = int(parts[1])
+        episode_id = int(parts[2])
+        season_num = int(parts[3])
+        ep_num = int(parts[4])
+
+        sonarr = SonarrClient(cfg.sonarr.base_url, cfg.sonarr.api_token)
+        episodes = await sonarr.list_episodes(series_id=series_id, season_number=season_num)
+        episode = next((e for e in episodes if e.get("id") == episode_id), None)
+        ep_title = episode.get("title", "Sin título") if episode else "Sin título"
+        label = f"S{season_num:02d}E{ep_num:02d} - {ep_title}"
+
+        await query.edit_message_text(f"🔍 Buscando releases para {label}...")
+
+        await sonarr.search_episode(episode_id)
+
+        releases: list[dict[str, Any]] = []
+        for attempt in range(4):
+            import asyncio
+            await asyncio.sleep(3)
+            releases = await sonarr.search_releases(series_id, [episode_id])
+            if releases:
+                break
+
+        if not releases:
+            await query.edit_message_text(
+                f"No se encontraron releases para {label}.\n"
+                f"Puede que el indexer tarde más. Intenta de nuevo en unos momentos."
+            )
+            return
+
+        releases.sort(key=lambda x: x.get("seeders", 0) or 0, reverse=True)
+        releases = releases[:50]
+
+        search_id = str(uuid.uuid4())[:8]
+        context.user_data[f"rel_ser_{search_id}"] = {
+            "releases": releases,
+            "series_id": series_id,
+            "episode_ids": [episode_id],
+        }
+
+        self.client_service.log_activity(user_id, "serie.releases", label)
+        await self._show_release_list(query, search_id, releases, 0, label, "serie")
+
+    async def _cb_series_releases_nav(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+        query = update.callback_query
+        parts = query.data.split("|")
+        search_id = parts[1]
+        direction = parts[2]
+
+        data = context.user_data.get(f"rel_ser_{search_id}")
+        if not data:
+            await query.edit_message_text("Los resultados expiraron.")
+            return
+
+        releases = data["releases"]
+        current_page = data.get("page", 0)
+        if direction == "prev":
+            current_page -= 1
+        else:
+            current_page += 1
+        data["page"] = current_page
+        context.user_data[f"rel_ser_{search_id}"] = data
+
+        title = f"S{data.get('season_num', '?')}E{data.get('ep_num', '?')}"
+        await self._show_release_list(query, search_id, releases, current_page, title, "serie")
+
+    async def _cb_grab_series_release(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+        query = update.callback_query
+        parts = query.data.split("|")
+        search_id = parts[1]
+        index = int(parts[2])
+
+        data = context.user_data.get(f"rel_ser_{search_id}")
+        if not data:
+            await query.answer("Los resultados expiraron")
+            return
+
+        releases = data["releases"]
+        if index < 0 or index >= len(releases):
+            await query.answer("Índice inválido")
+            return
+
+        rel = releases[index]
+        guid = rel.get("guid")
+        indexer_id = rel.get("indexerId")
+        series_id = data["series_id"]
+        episode_ids = data["episode_ids"]
+
+        if not guid or not indexer_id:
+            await query.answer("Falta información del release")
+            return
+
+        cfg = self.config_manager.config
+        sonarr = SonarrClient(cfg.sonarr.base_url, cfg.sonarr.api_token)
+        try:
+            await sonarr.grab_release(guid, indexer_id, series_id, episode_ids)
+            self.client_service.log_activity(
+                user_id, "serie.grab", f"seriesId={series_id} episodeIds={episode_ids} title={rel.get('title', '?')[:60]}"
+            )
+            await query.answer("✅ Descarga añadida a Sonarr")
+            await query.message.reply_text(
+                f"✅ Release añadido a la cola de descarga:\n{rel.get('title', 'Desconocido')[:80]}"
+            )
+        except ArrClientError as exc:
+            await query.answer("Error al descargar")
+            await query.message.reply_text(f"Error al descargar: {exc}")
+
+    async def _cb_movie_releases(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+        query = update.callback_query
+        cfg = self.config_manager.config
+        parts = query.data.split("|")
+        movie_id = int(parts[1])
+
+        radarr = RadarrClient(cfg.radarr.base_url, cfg.radarr.api_token)
+        movie_data = await radarr.get(movie_id)
+        title = movie_data.get("title", "Desconocida")
+
+        await query.edit_message_text(f"🔍 Buscando releases para {title}...")
+
+        from .arr_clients import ArrClientError as ACE
+        try:
+            payload = {"name": "MoviesSearch", "movieIds": [movie_id]}
+            await radarr._request_versioned("POST", "/command", json_body=payload)
+        except ACE:
+            pass
+
+        releases: list[dict[str, Any]] = []
+        for attempt in range(4):
+            import asyncio
+            await asyncio.sleep(3)
+            releases = await radarr.search_releases(movie_id)
+            if releases:
+                break
+
+        if not releases:
+            await query.edit_message_text(
+                f"No se encontraron releases para {title}.\n"
+                f"Puede que el indexer tarde más. Intenta de nuevo en unos momentos."
+            )
+            return
+
+        releases.sort(key=lambda x: x.get("seeders", 0) or 0, reverse=True)
+        releases = releases[:50]
+
+        search_id = str(uuid.uuid4())[:8]
+        context.user_data[f"rel_mov_{search_id}"] = {
+            "releases": releases,
+            "movie_id": movie_id,
+        }
+
+        self.client_service.log_activity(user_id, "pelicula.releases", title)
+        await self._show_release_list(query, search_id, releases, 0, title, "movie")
+
+    async def _cb_movie_releases_nav(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+        query = update.callback_query
+        parts = query.data.split("|")
+        search_id = parts[1]
+        direction = parts[2]
+
+        data = context.user_data.get(f"rel_mov_{search_id}")
+        if not data:
+            await query.edit_message_text("Los resultados expiraron.")
+            return
+
+        releases = data["releases"]
+        current_page = data.get("page", 0)
+        if direction == "prev":
+            current_page -= 1
+        else:
+            current_page += 1
+        data["page"] = current_page
+        context.user_data[f"rel_mov_{search_id}"] = data
+
+        title = f"movie_{search_id}"
+        await self._show_release_list(query, search_id, releases, current_page, "película", "movie")
+
+    async def _cb_grab_movie_release(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+        query = update.callback_query
+        parts = query.data.split("|")
+        search_id = parts[1]
+        index = int(parts[2])
+
+        data = context.user_data.get(f"rel_mov_{search_id}")
+        if not data:
+            await query.answer("Los resultados expiraron")
+            return
+
+        releases = data["releases"]
+        if index < 0 or index >= len(releases):
+            await query.answer("Índice inválido")
+            return
+
+        rel = releases[index]
+        guid = rel.get("guid")
+        indexer_id = rel.get("indexerId")
+        movie_id = data["movie_id"]
+
+        if not guid or not indexer_id:
+            await query.answer("Falta información del release")
+            return
+
+        cfg = self.config_manager.config
+        radarr = RadarrClient(cfg.radarr.base_url, cfg.radarr.api_token)
+        try:
+            await radarr.grab_release(guid, indexer_id, movie_id)
+            self.client_service.log_activity(
+                user_id, "pelicula.grab", f"movieId={movie_id} title={rel.get('title', '?')[:60]}"
+            )
+            await query.answer("✅ Descarga añadida a Radarr")
+            await query.message.reply_text(
+                f"✅ Release añadido a la cola de descarga:\n{rel.get('title', 'Desconocido')[:80]}"
+            )
+        except ArrClientError as exc:
+            await query.answer("Error al descargar")
+            await query.message.reply_text(f"Error al descargar: {exc}")
 
     async def _cb_add_media(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
         query = update.callback_query

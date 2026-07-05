@@ -132,6 +132,21 @@ class SonarrClient(BaseArrClient):
         data = await self._request_versioned("POST", "/command", json_body=payload)
         return data if isinstance(data, dict) else {}
 
+    async def search_releases(self, series_id: int, episode_ids: list[int]) -> list[dict[str, Any]]:
+        params = {"seriesId": series_id, "episodeIds": ",".join(str(e) for e in episode_ids)}
+        data = await self._request_versioned("GET", "/release", params=params)
+        return data if isinstance(data, list) else []
+
+    async def grab_release(self, guid: str, indexer_id: int, series_id: int, episode_ids: list[int]) -> dict[str, Any]:
+        payload = {
+            "guid": guid,
+            "indexerId": indexer_id,
+            "seriesId": series_id,
+            "episodeIds": episode_ids,
+        }
+        data = await self._request_versioned("POST", "/release", json_body=payload)
+        return data if isinstance(data, dict) else {}
+
     async def delete(self, series_id: int) -> None:
         await self._request_versioned(
             "DELETE",
@@ -205,6 +220,19 @@ class RadarrClient(BaseArrClient):
             f"/movie/{movie_id}",
             params={"deleteFiles": "false", "addImportListExclusion": "false"},
         )
+
+    async def search_releases(self, movie_id: int) -> list[dict[str, Any]]:
+        data = await self._request_versioned("GET", "/release", params={"movieId": movie_id})
+        return data if isinstance(data, list) else []
+
+    async def grab_release(self, guid: str, indexer_id: int, movie_id: int) -> dict[str, Any]:
+        payload = {
+            "guid": guid,
+            "indexerId": indexer_id,
+            "movieId": movie_id,
+        }
+        data = await self._request_versioned("POST", "/release", json_body=payload)
+        return data if isinstance(data, dict) else {}
 
     async def add(self, tmdb_id: int, quality_profile_id: int, root_folder_path: str, tags: list[str] | None = None) -> dict[str, Any]:
         existing = await self.list_all()
