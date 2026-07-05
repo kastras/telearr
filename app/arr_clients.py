@@ -18,6 +18,8 @@ class ArrAlreadyExistsError(ArrClientError):
 
 
 class BaseArrClient:
+    API_VERSIONS: tuple[str, ...] = ("v5", "v3")
+
     def __init__(self, base_url: str, api_token: str):
         self.base_url = base_url.rstrip("/")
         self.api_token = api_token
@@ -52,7 +54,7 @@ class BaseArrClient:
     ) -> Any:
         """Prueba v5 y, si no existe endpoint, cae a v3 automáticamente."""
         last_error: ArrClientError | None = None
-        for version in ("v5", "v3"):
+        for version in self.API_VERSIONS:
             try:
                 return await self._request(
                     method,

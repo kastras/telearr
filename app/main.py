@@ -102,7 +102,7 @@ def require_admin(request: Request) -> bool:
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+    return templates.TemplateResponse(request, "login.html", {"error": None})
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -110,8 +110,9 @@ async def login_submit(request: Request, password: str = Form(...)):
     cfg = config_manager.config
     if not verify_password(password, cfg.runtime.admin_password):
         return templates.TemplateResponse(
+            request,
             "login.html",
-            {"request": request, "error": "Password invalida"},
+            {"error": "Password invalida"},
             status_code=401,
         )
 
@@ -134,7 +135,6 @@ async def dashboard(request: Request):
         return RedirectResponse(url="/login", status_code=303)
 
     context = {
-        "request": request,
         "pending": client_service.list_pending_tokens(),
         "clients": client_service.list_clients(),
         "searches": client_service.last_searches(30),
@@ -143,7 +143,7 @@ async def dashboard(request: Request):
         "bot_runtime": BOT_RUNTIME,
         "message": None,
     }
-    return templates.TemplateResponse("dashboard.html", context)
+    return templates.TemplateResponse(request, "dashboard.html", context)
 
 
 @app.get("/health")
@@ -193,7 +193,6 @@ async def save_config(request: Request, config_yaml: str = Form(...)):
         message = f"Error guardando configuracion: {exc}"
 
     context = {
-        "request": request,
         "pending": client_service.list_pending_tokens(),
         "clients": client_service.list_clients(),
         "searches": client_service.last_searches(30),
@@ -202,4 +201,4 @@ async def save_config(request: Request, config_yaml: str = Form(...)):
         "bot_runtime": BOT_RUNTIME,
         "message": message,
     }
-    return templates.TemplateResponse("dashboard.html", context)
+    return templates.TemplateResponse(request, "dashboard.html", context)
