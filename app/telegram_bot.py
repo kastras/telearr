@@ -1354,6 +1354,15 @@ class TelegramBotService:
             )
             return
 
+        releases = [r for r in releases if not r.get("rejected")]
+        if not releases:
+            await query.edit_message_text(
+                f"No hay releases disponibles para {label}.\n"
+                f"Puede que Sonarr ya haya iniciado la descarga automática. "
+                f"Revisa la cola de descargas en Sonarr."
+            )
+            return
+
         releases.sort(key=lambda x: x.get("seeders", 0) or 0, reverse=True)
         releases = releases[:50]
 
@@ -1429,7 +1438,15 @@ class TelegramBotService:
             )
         except ArrClientError as exc:
             await query.answer("Error al descargar")
-            await query.message.reply_text(f"Error al descargar: {exc}")
+            error_msg = str(exc)
+            if "already" in error_msg.lower():
+                await query.message.reply_text(
+                    f"⚠️ Sonarr indica que este episodio ya fue añadido a la cola.\n\n"
+                    f"Revisa la cola de descargas en Sonarr. Si el error persiste, "
+                    f"puede que necesites eliminar la descarga anterior desde Sonarr."
+                )
+            else:
+                await query.message.reply_text(f"Error al descargar: {exc}")
 
     async def _cb_movie_releases(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
         query = update.callback_query
@@ -1462,6 +1479,15 @@ class TelegramBotService:
             await query.edit_message_text(
                 f"No se encontraron releases para {title}.\n"
                 f"Puede que el indexer tarde más. Intenta de nuevo en unos momentos."
+            )
+            return
+
+        releases = [r for r in releases if not r.get("rejected")]
+        if not releases:
+            await query.edit_message_text(
+                f"No hay releases disponibles para {title}.\n"
+                f"Puede que Radarr ya haya iniciado la descarga automática. "
+                f"Revisa la cola de descargas en Radarr."
             )
             return
 
@@ -1538,7 +1564,15 @@ class TelegramBotService:
             )
         except ArrClientError as exc:
             await query.answer("Error al descargar")
-            await query.message.reply_text(f"Error al descargar: {exc}")
+            error_msg = str(exc)
+            if "already" in error_msg.lower():
+                await query.message.reply_text(
+                    f"⚠️ Radarr indica que esta película ya fue añadida a la cola.\n\n"
+                    f"Revisa la cola de descargas en Radarr. Si el error persiste, "
+                    f"puede que necesites eliminar la descarga anterior desde Radarr."
+                )
+            else:
+                await query.message.reply_text(f"Error al descargar: {exc}")
 
     async def _cb_add_media(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
         query = update.callback_query
