@@ -9,7 +9,10 @@
 <body>
   <header>
     <h1>TeleArr Dashboard</h1>
-    <a href="/logout">Cerrar sesion</a>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <button type="submit">Cerrar sesion</button>
+    </form>
   </header>
 
   {% if message %}
@@ -44,7 +47,8 @@
           <td>{{ c.expires_at }}</td>
           <td>
             <form method="post" action="/clients/{{ c.telegram_user_id }}/approve">
-              <input type="hidden" name="token" value="{{ c.token }}" />
+             <input type="hidden" name="token" value="{{ c.token }}" />
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
               <button type="submit">Aprobar</button>
             </form>
           </td>
@@ -75,9 +79,9 @@
           <td>{{ c.blocked }}</td>
           <td>
             {% if c.blocked %}
-              <form method="post" action="/clients/{{ c.telegram_user_id }}/unblock"><button type="submit">Desbloquear</button></form>
+              <form method="post" action="/clients/{{ c.telegram_user_id }}/unblock"><input type="hidden" name="csrf_token" value="{{ csrf_token }}" /><button type="submit">Desbloquear</button></form>
             {% else %}
-              <form method="post" action="/clients/{{ c.telegram_user_id }}/block"><button type="submit">Bloquear</button></form>
+              <form method="post" action="/clients/{{ c.telegram_user_id }}/block"><input type="hidden" name="csrf_token" value="{{ csrf_token }}" /><button type="submit">Bloquear</button></form>
             {% endif %}
           </td>
         </tr>
@@ -113,6 +117,7 @@
   <section>
     <h2>Configuracion YAML</h2>
     <form method="post" action="/config/save">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
       <textarea name="config_yaml" rows="24">{{ config_yaml }}</textarea>
       <button type="submit">Guardar configuracion</button>
     </form>

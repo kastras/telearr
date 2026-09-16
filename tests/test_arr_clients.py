@@ -95,6 +95,15 @@ class TestBaseArrClient:
         with pytest.raises(ArrClientError, match="500"):
             await base_client._request_versioned("GET", "/series")
 
+    @pytest.mark.asyncio
+    async def test_request_normalizes_network_errors(self, base_client, httpx_mock):
+        from app.arr_clients import ArrClientError
+        import httpx
+
+        httpx_mock.add_exception(httpx.ConnectError("offline"))
+        with pytest.raises(ArrClientError, match="No se pudo conectar"):
+            await base_client._request("GET", "/series")
+
 
 class TestSonarrClient:
     @pytest.mark.asyncio

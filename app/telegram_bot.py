@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 UTC = timezone.utc
 from typing import Any
 import uuid
+from urllib.parse import urlsplit
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -40,6 +41,15 @@ class TelegramBotService:
         app.add_error_handler(self.error_handler)
 
         return app
+
+    @staticmethod
+    def _poster_headers(poster_url: str, service_url: str, api_token: str) -> dict[str, str]:
+        """Only authenticate image requests sent to the configured Arr origin."""
+        poster = urlsplit(poster_url)
+        service = urlsplit(service_url)
+        if (poster.scheme, poster.netloc) == (service.scheme, service.netloc):
+            return {"X-Api-Key": api_token}
+        return {}
 
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         import logging
@@ -173,14 +183,11 @@ class TelegramBotService:
 
         if poster_url:
             try:
-                url_with_auth = poster_url
-                if "?" in poster_url:
-                    url_with_auth = f"{poster_url}&apikey={cfg.sonarr.api_token}"
-                else:
-                    url_with_auth = f"{poster_url}?apikey={cfg.sonarr.api_token}"
-
                 async with httpx.AsyncClient(timeout=10) as client:
-                    res = await client.get(url_with_auth)
+                    res = await client.get(
+                        poster_url,
+                        headers=self._poster_headers(poster_url, cfg.sonarr.base_url, cfg.sonarr.api_token),
+                    )
                     res.raise_for_status()
                     image_data = res.content
 
@@ -344,14 +351,11 @@ class TelegramBotService:
 
         if poster_url:
             try:
-                url_with_auth = poster_url
-                if "?" in poster_url:
-                    url_with_auth = f"{poster_url}&apikey={cfg.radarr.api_token}"
-                else:
-                    url_with_auth = f"{poster_url}?apikey={cfg.radarr.api_token}"
-
                 async with httpx.AsyncClient(timeout=10) as client:
-                    res = await client.get(url_with_auth)
+                    res = await client.get(
+                        poster_url,
+                        headers=self._poster_headers(poster_url, cfg.radarr.base_url, cfg.radarr.api_token),
+                    )
                     res.raise_for_status()
                     image_data = res.content
 
@@ -511,6 +515,20 @@ class TelegramBotService:
 
         query_text = (message.text or "").strip()
         if not query_text:
+            return
+
+        pending_action = context.user_data.pop("pending_menu_action", None)
+        if isinstance(pending_action, str) and "|" in pending_action:
+            media_type, action = pending_action.split("|", 1)
+            original_args = context.args
+            context.args = [action, query_text]
+            try:
+                if media_type == "serie":
+                    await self.on_serie(update, context)
+                else:
+                    await self.on_pelicula(update, context)
+            finally:
+                context.args = original_args
             return
 
         context.user_data["pending_query"] = query_text
@@ -1062,6 +1080,8 @@ class TelegramBotService:
 
         text = prompts.get(action)
         if text:
+            media_type = "serie" if action_type == "smenu" else "pelicula"
+            context.user_data["pending_menu_action"] = f"{media_type}|{action}"
             await query.edit_message_text(text)
 
     async def _cb_local_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:

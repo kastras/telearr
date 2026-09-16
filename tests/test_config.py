@@ -103,7 +103,7 @@ class TestConfigManagerLoadFromYaml:
         assert cfg.radarr.base_url == "http://radarr:7878"
         assert cfg.radarr.api_token == "radarr-token"
         assert cfg.runtime.admin_password == "admin123"
-        assert cfg.runtime.session_secret == "secret123"
+        assert cfg.runtime.session_secret == "0123456789abcdef0123456789abcdef"
         assert cfg.defaults.series_root_folder == "/tv"
         assert cfg.defaults.movies_root_folder == "/movies"
         assert cfg.defaults.series_quality_profile_id == 4
@@ -166,11 +166,18 @@ class TestConfigManagerWriteAndUpdate:
         config_path.write_text(sample_config_yaml)
         cm = ConfigManager(config_path)
         new_yaml = sample_config_yaml.replace("admin123", "newpass")
-        new_yaml = new_yaml.replace("secret123", "newsecret")
+        new_yaml = new_yaml.replace("0123456789abcdef0123456789abcdef", "abcdef0123456789abcdef0123456789")
         cm.update_from_yaml_text(new_yaml)
         cfg = cm.config
         assert cfg.runtime.admin_password == "newpass"
-        assert cfg.runtime.session_secret == "newsecret"
+        assert cfg.runtime.session_secret == "abcdef0123456789abcdef0123456789"
+
+    def test_rejects_insecure_runtime_secrets(self, tmp_path: Path, sample_config_yaml: str):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(sample_config_yaml)
+        cm = ConfigManager(config_path)
+        with pytest.raises(ValueError, match="ADMIN_PASSWORD"):
+            cm.update_from_yaml_text(sample_config_yaml.replace("admin123", "admin"))
 
     def test_update_from_yaml_text_invalid(self, tmp_path: Path, sample_config_yaml: str):
         config_path = tmp_path / "config.yaml"

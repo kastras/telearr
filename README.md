@@ -110,6 +110,14 @@ Si no existe mapeo para `res|audio`, se usa `SERIES_QUALITY_PROFILE_ID` o `MOVIE
 
 ## Notas de seguridad
 
-- Cambia `ADMIN_PASSWORD` y `SESSION_SECRET` antes de produccion.
+- `ADMIN_PASSWORD` y `SESSION_SECRET` son obligatorios. El servicio rechaza los valores por defecto y exige que `SESSION_SECRET` tenga al menos 32 caracteres.
+- El panel usa sesiones HTTP-only de ocho horas y protege las operaciones que cambian estado con tokens CSRF.
+- Publica el panel detrás de HTTPS; la cookie de sesión se marca como `Secure` cuando recibe peticiones HTTPS.
 - El bot solo permite acciones a usuarios aprobados y no bloqueados.
 - Los tokens de aprobacion expiran en 30 minutos.
+
+## Desarrollo
+
+Instala las herramientas de prueba en un entorno virtual y ejecuta la suite:
+
+`python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/pytest -q`

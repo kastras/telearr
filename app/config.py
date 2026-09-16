@@ -151,8 +151,17 @@ class ConfigManager:
     def get_yaml_text(self) -> str:
         return self.config_path.read_text(encoding="utf-8")
 
+    @staticmethod
+    def validate_runtime_secrets(cfg: AppConfig) -> None:
+        insecure_values = {"", "admin", "change-me"}
+        if cfg.runtime.admin_password in insecure_values:
+            raise ValueError("ADMIN_PASSWORD debe tener un valor distinto de 'admin'")
+        if cfg.runtime.session_secret in insecure_values or len(cfg.runtime.session_secret) < 32:
+            raise ValueError("SESSION_SECRET debe tener al menos 32 caracteres y no usar valores por defecto")
+
     def update_from_yaml_text(self, raw: str) -> AppConfig:
         cfg = self._read_yaml(raw)
+        self.validate_runtime_secrets(cfg)
         with self._lock:
             self._write_yaml(cfg)
             self._config = cfg

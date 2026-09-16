@@ -43,7 +43,8 @@ class TestPairTokens:
         svc = ClientService(db)
         svc.ensure_client(mock_telegram_user)
         token, expires_at = svc.create_pair_token(12345)
-        assert len(token) > 0
+        assert len(token) == 6
+        assert all(character in "0123456789abcdef" for character in token)
         assert expires_at is not None
         row = db.fetchone(
             "SELECT * FROM pair_tokens WHERE telegram_user_id = ?", (12345,)

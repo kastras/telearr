@@ -43,12 +43,18 @@ class ClientService:
         )
 
     def create_pair_token(self, telegram_user_id: int) -> tuple[str, str]:
-        token = secrets.token_urlsafe(12)
+        token = secrets.token_hex(3)
         expires_at = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
-        self.db.execute(
-            "INSERT INTO pair_tokens (telegram_user_id, token, expires_at, created_at) VALUES (?, ?, ?, ?)",
-            (telegram_user_id, token, expires_at, now_iso()),
-        )
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM pair_tokens WHERE expires_at < ?", (now_iso(),))
+            conn.execute(
+                "UPDATE pair_tokens SET used = 1 WHERE telegram_user_id = ? AND used = 0",
+                (telegram_user_id,),
+            )
+            conn.execute(
+                "INSERT INTO pair_tokens (telegram_user_id, token, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                (telegram_user_id, token, expires_at, now_iso()),
+            )
         return token, expires_at
 
     def get_client_state(self, telegram_user_id: int) -> dict[str, Any] | None:
@@ -61,30 +67,21 @@ class ClientService:
         return dict(row)
 
     def approve_with_token(self, telegram_user_id: int, token: str) -> bool:
-        row = self.db.fetchone(
-            """
-            SELECT token, expires_at, used FROM pair_tokens
-            WHERE telegram_user_id = ? AND token = ?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (telegram_user_id, token),
-        )
-        if not row:
-            return False
-
-        expires = datetime.fromisoformat(row["expires_at"])
-        if row["used"] or expires < datetime.now(UTC):
-            return False
-
-        self.db.execute(
-            "UPDATE clients SET approved = 1, blocked = 0 WHERE telegram_user_id = ?",
-            (telegram_user_id,),
-        )
-        self.db.execute(
-            "UPDATE pair_tokens SET used = 1 WHERE telegram_user_id = ? AND token = ?",
-            (telegram_user_id, token),
-        )
-        return True
+        with self.db.transaction() as conn:
+            token_update = conn.execute(
+                """
+                UPDATE pair_tokens SET used = 1
+                WHERE telegram_user_id = ? AND token = ? AND used = 0 AND expires_at > ?
+                """,
+                (telegram_user_id, token, now_iso()),
+            )
+            if token_update.rowcount != 1:
+                return False
+            client_update = conn.execute(
+                "UPDATE clients SET approved = 1, blocked = 0 WHERE telegram_user_id = ?",
+                (telegram_user_id,),
+            )
+            return client_update.rowcount == 1
 
     def set_blocked(self, telegram_user_id: int, blocked: bool) -> None:
         self.db.execute(

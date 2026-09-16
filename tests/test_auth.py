@@ -62,3 +62,10 @@ class TestSessionAuth:
         auth2 = SessionAuth("same-secret")
         token = auth1.create_session()
         assert auth2.is_valid(token) is True
+
+    def test_csrf_token_must_match_session(self):
+        auth = SessionAuth("secret")
+        token = auth.create_session()
+        csrf = auth.session_data(token)["csrf"]
+        assert auth.is_valid_csrf(token, csrf) is True
+        assert auth.is_valid_csrf(token, "wrong") is False

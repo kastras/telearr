@@ -37,8 +37,11 @@ class BaseArrClient:
         headers = {"X-Api-Key": self.api_token}
         url = f"{self.base_url}{path}"
 
-        async with httpx.AsyncClient(timeout=20) as client:
-            res = await client.request(method, url, headers=headers, params=params, json=json_body)
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                res = await client.request(method, url, headers=headers, params=params, json=json_body)
+        except httpx.RequestError as exc:
+            raise ArrClientError(f"No se pudo conectar con el servicio Arr: {exc.__class__.__name__}") from exc
         if res.status_code >= 400:
             raise ArrClientError(f"{res.status_code}: {res.text[:200]}")
         if not res.content:

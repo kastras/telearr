@@ -277,6 +277,12 @@ class TestTelegramBotService:
         app = service.build_application()
         assert app is not None
 
+    def test_poster_headers_only_authenticate_arr_host(self, service):
+        assert service._poster_headers("http://sonarr:8989/image.jpg", "http://sonarr:8989", "token") == {
+            "X-Api-Key": "token"
+        }
+        assert service._poster_headers("https://images.example/image.jpg", "http://sonarr:8989", "token") == {}
+
     @pytest.mark.asyncio
     async def test_on_start_approved(self, service):
         update = MagicMock()
@@ -309,3 +315,20 @@ class TestTelegramBotService:
         message.reply_text.assert_called_once()
         args = message.reply_text.call_args[1]
         assert "reply_markup" in args
+
+    @pytest.mark.asyncio
+    async def test_on_free_text_runs_selected_menu_action(self, service):
+        update = MagicMock()
+        update.effective_user.id = 123
+        message = AsyncMock()
+        message.text = "42"
+        update.effective_message = message
+        context = MagicMock()
+        context.user_data = {"pending_menu_action": "pelicula|estado"}
+        context.args = []
+
+        with patch.object(service, "on_pelicula", new=AsyncMock()) as movie_handler:
+            await service.on_free_text(update, context)
+
+        movie_handler.assert_awaited_once()
+        assert context.args == []

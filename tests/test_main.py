@@ -46,6 +46,14 @@ class TestHealth:
         assert data["ok"] is True
         assert "bot" in data
 
+    def test_health_fails_when_enabled_bot_is_not_running(self, test_client):
+        from app.main import BOT_RUNTIME
+        BOT_RUNTIME["enabled"] = True
+        BOT_RUNTIME["running"] = False
+        response = test_client.get("/health")
+        assert response.status_code == 503
+        assert response.json()["ok"] is False
+
 
 class TestLogin:
     def test_login_page(self, test_client):
@@ -66,7 +74,10 @@ class TestLogin:
         assert response.status_code == 401
 
     def test_logout(self, test_client):
-        response = test_client.get("/logout", follow_redirects=False)
+        login = test_client.post("/login", data={"password": "test-pass"}, follow_redirects=False)
+        from app.main import build_auth
+        csrf = build_auth().session_data(login.cookies["telearr_session"])["csrf"]
+        response = test_client.post("/logout", data={"csrf_token": csrf}, follow_redirects=False)
         assert response.status_code == 303
         assert response.headers["location"] == "/login"
 
@@ -93,7 +104,9 @@ class TestClientManagement:
         login = test_client.post(
             "/login", data={"password": "test-pass"}, follow_redirects=False
         )
-        return login.cookies["telearr_session"]
+        from app.main import build_auth
+        cookie = login.cookies["telearr_session"]
+        return cookie, build_auth().session_data(cookie)["csrf"]
 
     def test_approve_client_requires_auth(self, test_client):
         response = test_client.post(
@@ -115,7 +128,7 @@ class TestClientManagement:
         assert response.headers["location"] == "/login"
 
     def test_approve_client(self, test_client):
-        cookie = self._login(test_client)
+        cookie, csrf = self._login(test_client)
 
         from app.main import client_service
         from app.db import Database
@@ -135,7 +148,7 @@ class TestClientManagement:
 
         response = test_client.post(
             f"/clients/999/approve",
-            data={"token": token},
+            data={"token": token, "csrf_token": csrf},
             cookies={"telearr_session": cookie},
             follow_redirects=False,
         )
@@ -146,7 +159,7 @@ class TestClientManagement:
         assert state["approved"] == 1
 
     def test_block_client(self, test_client):
-        cookie = self._login(test_client)
+        cookie, csrf = self._login(test_client)
         from app.main import client_service
         from app.db import Database
 
@@ -158,7 +171,7 @@ class TestClientManagement:
 
         response = test_client.post(
             "/clients/777/block",
-            cookies={"telearr_session": cookie},
+            data={"csrf_token": csrf}, cookies={"telearr_session": cookie},
             follow_redirects=False,
         )
         assert response.status_code == 303
@@ -167,7 +180,7 @@ class TestClientManagement:
         assert state["blocked"] == 1
 
     def test_block_and_unblock_client(self, test_client):
-        cookie = self._login(test_client)
+        cookie, csrf = self._login(test_client)
         from app.main import client_service
         from app.db import Database
 
@@ -179,7 +192,7 @@ class TestClientManagement:
 
         response = test_client.post(
             "/clients/888/block",
-            cookies={"telearr_session": cookie},
+            data={"csrf_token": csrf}, cookies={"telearr_session": cookie},
             follow_redirects=False,
         )
         assert response.status_code == 303
@@ -189,7 +202,7 @@ class TestClientManagement:
 
         response = test_client.post(
             "/clients/888/unblock",
-            cookies={"telearr_session": cookie},
+            data={"csrf_token": csrf}, cookies={"telearr_session": cookie},
             follow_redirects=False,
         )
         assert response.status_code == 303
@@ -211,10 +224,19 @@ class TestConfigSave:
             "/login", data={"password": "test-pass"}, follow_redirects=False
         )
         cookie = login.cookies["telearr_session"]
+        from app.main import build_auth
+        csrf = build_auth().session_data(cookie)["csrf"]
 
         response = test_client.post(
             "/config/save",
-            data={"config_yaml": "telegram:\n  bot_token: 'updated'\n"},
+            data={
+                "config_yaml": (
+                    "telegram:\n  bot_token: 'updated'\n"
+                    "runtime:\n  admin_password: test-pass\n"
+                    "  session_secret: 0123456789abcdef0123456789abcdef\n"
+                ),
+                "csrf_token": csrf,
+            },
             cookies={"telearr_session": cookie},
         )
         assert response.status_code == 200

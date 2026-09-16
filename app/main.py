@@ -6,11 +6,11 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .auth import SessionAuth, verify_password
+from .auth import SESSION_MAX_AGE_SECONDS, SessionAuth, verify_password
 from .config import ConfigManager
 from .db import Database
 from .services import ClientService
@@ -48,35 +48,49 @@ async def run_telegram_bot(stop_event: asyncio.Event) -> None:
         logger.warning("Telegram bot desactivado: TELEGRAM_BOT_TOKEN vacio")
         return
 
-    try:
+    retry_delay = 1
+    while not stop_event.is_set():
         service = TelegramBotService(config_manager, client_service)
         app = service.build_application()
-
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling()
-
-        BOT_RUNTIME["running"] = True
-        BOT_RUNTIME["last_error"] = None
-        logger.info("Telegram bot iniciado en modo polling")
-
+        initialized = False
+        started = False
+        polling = False
         try:
+            await app.initialize()
+            initialized = True
+            await app.start()
+            started = True
+            await app.updater.start_polling()
+            polling = True
+            BOT_RUNTIME["running"] = True
+            BOT_RUNTIME["last_error"] = None
+            retry_delay = 1
+            logger.info("Telegram bot iniciado en modo polling")
             while not stop_event.is_set():
                 await asyncio.sleep(1)
-        finally:
-            await app.updater.stop()
-            await app.stop()
-            await app.shutdown()
+        except Exception as exc:
             BOT_RUNTIME["running"] = False
-            logger.info("Telegram bot detenido")
-    except Exception as exc:
-        BOT_RUNTIME["running"] = False
-        BOT_RUNTIME["last_error"] = str(exc)
-        logger.exception("Fallo al iniciar Telegram bot")
+            BOT_RUNTIME["last_error"] = str(exc)
+            logger.exception("Fallo del bot Telegram; reintentando en %s segundos", retry_delay)
+        finally:
+            if polling:
+                await app.updater.stop()
+            if started:
+                await app.stop()
+            if initialized:
+                await app.shutdown()
+            BOT_RUNTIME["running"] = False
+
+        if not stop_event.is_set():
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+
+    logger.info("Telegram bot detenido")
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    config_manager.validate_runtime_secrets(config_manager.config)
     stop_event = asyncio.Event()
     bot_task = asyncio.create_task(run_telegram_bot(stop_event))
 
@@ -100,6 +114,26 @@ def require_admin(request: Request) -> bool:
     return auth.is_valid(request.cookies.get("telearr_session"))
 
 
+def require_csrf(request: Request, csrf_token: str | None) -> bool:
+    auth = build_auth()
+    return bool(csrf_token) and auth.is_valid_csrf(request.cookies.get("telearr_session"), csrf_token)
+
+
+def dashboard_context(request: Request, message: str | None = None) -> dict[str, object]:
+    auth = build_auth()
+    session = auth.session_data(request.cookies.get("telearr_session")) or {}
+    return {
+        "pending": client_service.list_pending_tokens(),
+        "clients": client_service.list_clients(),
+        "searches": client_service.last_searches(30),
+        "activities": client_service.last_activities(30),
+        "config_yaml": config_manager.get_yaml_text(),
+        "bot_runtime": BOT_RUNTIME,
+        "csrf_token": session.get("csrf", ""),
+        "message": message,
+    }
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", {"error": None})
@@ -118,12 +152,21 @@ async def login_submit(request: Request, password: str = Form(...)):
 
     auth = build_auth()
     response = RedirectResponse(url="/", status_code=303)
-    response.set_cookie("telearr_session", auth.create_session(), httponly=True, samesite="lax")
+    response.set_cookie(
+        "telearr_session",
+        auth.create_session(),
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        max_age=SESSION_MAX_AGE_SECONDS,
+    )
     return response
 
 
-@app.get("/logout")
-async def logout():
+@app.post("/logout")
+async def logout(request: Request, csrf_token: str | None = Form(None)):
+    if not require_admin(request) or not require_csrf(request, csrf_token):
+        return RedirectResponse(url="/login", status_code=303)
     response = RedirectResponse(url="/login", status_code=303)
     response.delete_cookie("telearr_session")
     return response
@@ -134,29 +177,21 @@ async def dashboard(request: Request):
     if not require_admin(request):
         return RedirectResponse(url="/login", status_code=303)
 
-    context = {
-        "pending": client_service.list_pending_tokens(),
-        "clients": client_service.list_clients(),
-        "searches": client_service.last_searches(30),
-        "activities": client_service.last_activities(30),
-        "config_yaml": config_manager.get_yaml_text(),
-        "bot_runtime": BOT_RUNTIME,
-        "message": None,
-    }
-    return templates.TemplateResponse(request, "dashboard.html", context)
+    return templates.TemplateResponse(request, "dashboard.html", dashboard_context(request))
 
 
 @app.get("/health")
 async def health():
-    return {
-        "ok": True,
-        "bot": BOT_RUNTIME,
-    }
+    healthy = not BOT_RUNTIME["enabled"] or BOT_RUNTIME["running"]
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={"ok": healthy, "bot": BOT_RUNTIME},
+    )
 
 
 @app.post("/clients/{telegram_user_id}/approve")
-async def approve_client(request: Request, telegram_user_id: int, token: str = Form(...)):
-    if not require_admin(request):
+async def approve_client(request: Request, telegram_user_id: int, token: str = Form(...), csrf_token: str | None = Form(None)):
+    if not require_admin(request) or not require_csrf(request, csrf_token):
         return RedirectResponse(url="/login", status_code=303)
 
     client_service.approve_with_token(telegram_user_id, token)
@@ -164,8 +199,8 @@ async def approve_client(request: Request, telegram_user_id: int, token: str = F
 
 
 @app.post("/clients/{telegram_user_id}/block")
-async def block_client(request: Request, telegram_user_id: int):
-    if not require_admin(request):
+async def block_client(request: Request, telegram_user_id: int, csrf_token: str | None = Form(None)):
+    if not require_admin(request) or not require_csrf(request, csrf_token):
         return RedirectResponse(url="/login", status_code=303)
 
     client_service.set_blocked(telegram_user_id, True)
@@ -173,8 +208,8 @@ async def block_client(request: Request, telegram_user_id: int):
 
 
 @app.post("/clients/{telegram_user_id}/unblock")
-async def unblock_client(request: Request, telegram_user_id: int):
-    if not require_admin(request):
+async def unblock_client(request: Request, telegram_user_id: int, csrf_token: str | None = Form(None)):
+    if not require_admin(request) or not require_csrf(request, csrf_token):
         return RedirectResponse(url="/login", status_code=303)
 
     client_service.set_blocked(telegram_user_id, False)
@@ -182,8 +217,8 @@ async def unblock_client(request: Request, telegram_user_id: int):
 
 
 @app.post("/config/save", response_class=HTMLResponse)
-async def save_config(request: Request, config_yaml: str = Form(...)):
-    if not require_admin(request):
+async def save_config(request: Request, config_yaml: str = Form(...), csrf_token: str | None = Form(None)):
+    if not require_admin(request) or not require_csrf(request, csrf_token):
         return RedirectResponse(url="/login", status_code=303)
 
     message = "Configuracion guardada"
@@ -192,13 +227,4 @@ async def save_config(request: Request, config_yaml: str = Form(...)):
     except Exception as exc:
         message = f"Error guardando configuracion: {exc}"
 
-    context = {
-        "pending": client_service.list_pending_tokens(),
-        "clients": client_service.list_clients(),
-        "searches": client_service.last_searches(30),
-        "activities": client_service.last_activities(30),
-        "config_yaml": config_manager.get_yaml_text(),
-        "bot_runtime": BOT_RUNTIME,
-        "message": message,
-    }
-    return templates.TemplateResponse(request, "dashboard.html", context)
+    return templates.TemplateResponse(request, "dashboard.html", dashboard_context(request, message))

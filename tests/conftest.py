@@ -54,7 +54,7 @@ radarr:
 
 runtime:
   admin_password: "admin123"
-  session_secret: "secret123"
+  session_secret: "0123456789abcdef0123456789abcdef"
 
 defaults:
   series_root_folder: "/tv"
@@ -98,7 +98,7 @@ radarr:
 
 runtime:
   admin_password: "admin"
-  session_secret: "change-me"
+  session_secret: "0123456789abcdef0123456789abcdef"
 
 defaults:
   series_root_folder: "/tv"

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import sqlite3
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 
 class Database:
@@ -14,6 +15,8 @@ class Database:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     def _init_schema(self) -> None:
@@ -57,8 +60,28 @@ class Database:
                     details TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_pair_tokens_pending
+                    ON pair_tokens (telegram_user_id, used, expires_at);
+                CREATE INDEX IF NOT EXISTS idx_search_logs_created_at
+                    ON search_logs (created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at
+                    ON activity_logs (created_at DESC);
                 """
             )
+            conn.execute("PRAGMA journal_mode = WAL")
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except Exception:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
 
     def execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
         with self._connect() as conn:
