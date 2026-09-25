@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+import secrets
 import threading
 from typing import Any
 
@@ -87,7 +88,10 @@ class ConfigManager:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
 
         if self.config_path.exists():
-            return self._read_yaml(self.config_path.read_text(encoding="utf-8"))
+            cfg = self._read_yaml(self.config_path.read_text(encoding="utf-8"))
+            if self._ensure_session_secret(cfg):
+                self._write_yaml(cfg)
+            return cfg
 
         env = __import__("os").environ
         cfg = AppConfig(
@@ -117,6 +121,7 @@ class ConfigManager:
                 movies_add_tags=self._parse_str_list(env.get("MOVIES_ADD_TAGS", "")),
             ),
         )
+        self._ensure_session_secret(cfg)
         self._write_yaml(cfg)
         return cfg
 
@@ -148,6 +153,14 @@ class ConfigManager:
             encoding="utf-8",
         )
 
+    @staticmethod
+    def _ensure_session_secret(cfg: AppConfig) -> bool:
+        secret = cfg.runtime.session_secret or ""
+        if secret in {"", "admin", "change-me"} or len(secret) < 32:
+            cfg.runtime.session_secret = secrets.token_urlsafe(32)
+            return True
+        return False
+
     def get_yaml_text(self) -> str:
         return self.config_path.read_text(encoding="utf-8")
 
@@ -161,6 +174,7 @@ class ConfigManager:
 
     def update_from_yaml_text(self, raw: str) -> AppConfig:
         cfg = self._read_yaml(raw)
+        self._ensure_session_secret(cfg)
         self.validate_runtime_secrets(cfg)
         with self._lock:
             self._write_yaml(cfg)
@@ -169,5 +183,8 @@ class ConfigManager:
 
     def refresh(self) -> AppConfig:
         with self._lock:
-            self._config = self._read_yaml(self.config_path.read_text(encoding="utf-8"))
+            cfg = self._read_yaml(self.config_path.read_text(encoding="utf-8"))
+            if self._ensure_session_secret(cfg):
+                self._write_yaml(cfg)
+            self._config = cfg
             return self._config

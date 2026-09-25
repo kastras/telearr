@@ -110,7 +110,7 @@ Si no existe mapeo para `res|audio`, se usa `SERIES_QUALITY_PROFILE_ID` o `MOVIE
 
 ## Notas de seguridad
 
-- `ADMIN_PASSWORD` y `SESSION_SECRET` son obligatorios. El servicio rechaza los valores por defecto y exige que `SESSION_SECRET` tenga al menos 32 caracteres.
+- `ADMIN_PASSWORD` es obligatorio y debe cambiarse del valor por defecto. `SESSION_SECRET` debe tener al menos 32 caracteres; si falta o no es válido, el servicio genera uno aleatorio y lo guarda en `data/config.yaml` para conservarlo entre reinicios.
 - El panel usa sesiones HTTP-only de ocho horas y protege las operaciones que cambian estado con tokens CSRF.
 - Publica el panel detrás de HTTPS; la cookie de sesión se marca como `Secure` cuando recibe peticiones HTTPS.
 - El bot solo permite acciones a usuarios aprobados y no bloqueados.

@@ -53,7 +53,7 @@ class TestConfigManagerInitFromEnv:
         monkeypatch.setenv("RADARR_URL", "http://env-radarr:7878")
         monkeypatch.setenv("RADARR_API_TOKEN", "env-radarr-token")
         monkeypatch.setenv("ADMIN_PASSWORD", "env-pass")
-        monkeypatch.setenv("SESSION_SECRET", "env-secret")
+        monkeypatch.setenv("SESSION_SECRET", "env-session-secret-0123456789abcdef")
         monkeypatch.setenv("SERIES_ROOT_FOLDER", "/env-tv")
         monkeypatch.setenv("MOVIES_ROOT_FOLDER", "/env-movies")
         monkeypatch.setenv("SERIES_QUALITY_PROFILE_ID", "4")
@@ -70,7 +70,7 @@ class TestConfigManagerInitFromEnv:
         assert cfg.radarr.base_url == "http://env-radarr:7878"
         assert cfg.radarr.api_token == "env-radarr-token"
         assert cfg.runtime.admin_password == "env-pass"
-        assert cfg.runtime.session_secret == "env-secret"
+        assert cfg.runtime.session_secret == "env-session-secret-0123456789abcdef"
         assert cfg.defaults.series_root_folder == "/env-tv"
         assert cfg.defaults.movies_root_folder == "/env-movies"
         assert cfg.defaults.series_quality_profile_id == 4
@@ -86,7 +86,8 @@ class TestConfigManagerInitFromEnv:
         cfg = cm.config
         assert cfg.telegram.bot_token == ""
         assert cfg.runtime.admin_password == "admin"
-        assert cfg.runtime.session_secret == "change-me"
+        assert len(cfg.runtime.session_secret) >= 32
+        assert cfg.runtime.session_secret != "change-me"
         assert cfg.defaults.series_quality_profile_id == 1
 
 
@@ -124,6 +125,21 @@ class TestConfigManagerLoadFromYaml:
         cm = ConfigManager(config_path)
         cfg = cm.config
         assert isinstance(cfg, AppConfig)
+
+    @pytest.mark.parametrize("invalid_secret", ["", "change-me", "too-short"])
+    def test_replaces_invalid_yaml_session_secret_and_persists_it(
+        self, tmp_path: Path, invalid_secret: str
+    ):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            f"runtime:\n  admin_password: secure-password\n  session_secret: '{invalid_secret}'\n"
+        )
+
+        cfg = ConfigManager(config_path).config
+
+        assert len(cfg.runtime.session_secret) >= 32
+        assert cfg.runtime.session_secret != invalid_secret
+        assert ConfigManager(config_path).config.runtime.session_secret == cfg.runtime.session_secret
 
     def test_loads_partial_yaml(self, tmp_path: Path):
         config_path = tmp_path / "config.yaml"
@@ -171,6 +187,20 @@ class TestConfigManagerWriteAndUpdate:
         cfg = cm.config
         assert cfg.runtime.admin_password == "newpass"
         assert cfg.runtime.session_secret == "abcdef0123456789abcdef0123456789"
+
+    def test_update_from_yaml_replaces_invalid_session_secret(self, tmp_path: Path, sample_config_yaml: str):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(sample_config_yaml)
+        cm = ConfigManager(config_path)
+
+        updated_yaml = sample_config_yaml.replace(
+            "0123456789abcdef0123456789abcdef", "short-secret"
+        )
+        cfg = cm.update_from_yaml_text(updated_yaml)
+
+        assert len(cfg.runtime.session_secret) >= 32
+        assert cfg.runtime.session_secret != "short-secret"
+        assert ConfigManager(config_path).config.runtime.session_secret == cfg.runtime.session_secret
 
     def test_rejects_insecure_runtime_secrets(self, tmp_path: Path, sample_config_yaml: str):
         config_path = tmp_path / "config.yaml"
