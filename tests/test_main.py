@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +35,10 @@ def test_client(tmp_path: Path, monkeypatch):
     app_main.BOT_RUNTIME["enabled"] = False
     app_main.BOT_RUNTIME["running"] = False
     app_main.BOT_RUNTIME["last_error"] = None
+    app_main.BOT_RUNTIME["last_update_at"] = None
+    app_main.BOT_RUNTIME["last_update_type"] = None
+    app_main.BOT_RUNTIME["last_callback_at"] = None
+    app_main.BOT_RUNTIME["last_callback_prefix"] = None
 
     return TestClient(app_main.app)
 
@@ -53,6 +58,21 @@ class TestHealth:
         response = test_client.get("/health")
         assert response.status_code == 503
         assert response.json()["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_record_telegram_callback_update(self, test_client):
+        from app import main as app_main
+
+        update = MagicMock()
+        update.callback_query.data = "sadd|123|1080p|multi"
+        update.update_id = 42
+
+        await app_main.record_telegram_update(update, MagicMock())
+
+        assert app_main.BOT_RUNTIME["last_update_type"] == "callback_query"
+        assert app_main.BOT_RUNTIME["last_update_at"]
+        assert app_main.BOT_RUNTIME["last_callback_at"]
+        assert app_main.BOT_RUNTIME["last_callback_prefix"] == "sadd"
 
 
 class TestLogin:

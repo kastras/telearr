@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
+import time
 
 UTC = timezone.utc
 from typing import Any
@@ -891,18 +893,50 @@ class TelegramBotService:
         if not query or not query.data:
             return
 
-        await query.answer()
+        prefix = query.data.split("|", 1)[0][:32]
+        started_at = time.monotonic()
+        logger = logging.getLogger(__name__)
+        logger.info("Procesando callback Telegram: update_id=%s prefix=%s", update.update_id, prefix)
+        try:
+            await query.answer()
+        except Exception:
+            logger.exception(
+                "No se pudo confirmar callback Telegram: update_id=%s prefix=%s",
+                update.update_id,
+                prefix,
+            )
+            raise
+        logger.info("Callback Telegram confirmado: update_id=%s prefix=%s", update.update_id, prefix)
 
         ok, user_id = await self._check_access(update)
         if not ok:
+            logger.info(
+                "Callback Telegram completado: update_id=%s prefix=%s elapsed_ms=%d access=denied",
+                update.update_id,
+                prefix,
+                int((time.monotonic() - started_at) * 1000),
+            )
             return
 
-        prefix = query.data.split("|")[0]
         handler = self._callback_handlers.get(prefix)
         if handler:
-            await handler(update, context, user_id)
+            try:
+                await handler(update, context, user_id)
+            except Exception:
+                logger.exception(
+                    "Fallo procesando callback Telegram: update_id=%s prefix=%s",
+                    update.update_id,
+                    prefix,
+                )
+                raise
         else:
             await query.answer("Acción inválida")
+        logger.info(
+            "Callback Telegram completado: update_id=%s prefix=%s elapsed_ms=%d",
+            update.update_id,
+            prefix,
+            int((time.monotonic() - started_at) * 1000),
+        )
 
     async def _cb_type_select(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
         query = update.callback_query

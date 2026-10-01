@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from telegram import Update
+from telegram.ext import ContextTypes, TypeHandler
 
 from .auth import SESSION_MAX_AGE_SECONDS, SessionAuth, verify_password
 from .config import ConfigManager
@@ -31,12 +34,33 @@ BOT_RUNTIME: dict[str, object] = {
     "enabled": False,
     "running": False,
     "last_error": None,
+    "last_update_at": None,
+    "last_update_type": None,
+    "last_callback_at": None,
+    "last_callback_prefix": None,
 }
 
 
 def build_auth() -> SessionAuth:
     cfg = config_manager.config
     return SessionAuth(cfg.runtime.session_secret)
+
+
+async def record_telegram_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Expose whether Telegram updates and callback queries reach this process."""
+    now = datetime.now(timezone.utc).isoformat()
+    callback = update.callback_query
+    update_type = "callback_query" if callback else "message" if update.effective_message else "other"
+    BOT_RUNTIME["last_update_at"] = now
+    BOT_RUNTIME["last_update_type"] = update_type
+
+    if callback:
+        prefix = (callback.data or "").split("|", 1)[0][:32]
+        BOT_RUNTIME["last_callback_at"] = now
+        BOT_RUNTIME["last_callback_prefix"] = prefix
+        logger.info("Telegram callback recibido: update_id=%s prefix=%s", update.update_id, prefix)
+    else:
+        logger.info("Telegram update recibido: update_id=%s type=%s", update.update_id, update_type)
 
 
 async def run_telegram_bot(stop_event: asyncio.Event) -> None:
@@ -52,6 +76,7 @@ async def run_telegram_bot(stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
         service = TelegramBotService(config_manager, client_service)
         app = service.build_application()
+        app.add_handler(TypeHandler(Update, record_telegram_update), group=-1)
         initialized = False
         started = False
         polling = False
