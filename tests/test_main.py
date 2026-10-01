@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -73,6 +74,34 @@ class TestHealth:
         assert app_main.BOT_RUNTIME["last_update_at"]
         assert app_main.BOT_RUNTIME["last_callback_at"]
         assert app_main.BOT_RUNTIME["last_callback_prefix"] == "sadd"
+
+    @pytest.mark.asyncio
+    async def test_run_telegram_bot_explicitly_requests_callbacks(self, monkeypatch):
+        from app import main as app_main
+
+        stop_event = asyncio.Event()
+        config_manager = MagicMock()
+        config_manager.config.telegram.bot_token = "test-token"
+        app = MagicMock()
+        app.initialize = AsyncMock()
+        app.start = AsyncMock()
+        app.updater.start_polling = AsyncMock(side_effect=lambda **_: stop_event.set())
+        app.updater.stop = AsyncMock()
+        app.stop = AsyncMock()
+        app.shutdown = AsyncMock()
+        service = MagicMock()
+        service.build_application.return_value = app
+        runtime = {"enabled": False, "running": False, "last_error": None}
+
+        monkeypatch.setattr(app_main, "config_manager", config_manager)
+        monkeypatch.setattr(app_main, "BOT_RUNTIME", runtime)
+        monkeypatch.setattr(app_main, "TelegramBotService", MagicMock(return_value=service))
+
+        await app_main.run_telegram_bot(stop_event)
+
+        app.updater.start_polling.assert_awaited_once_with(
+            allowed_updates=("message", "callback_query")
+        )
 
 
 class TestLogin:

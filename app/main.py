@@ -39,6 +39,7 @@ BOT_RUNTIME: dict[str, object] = {
     "last_callback_at": None,
     "last_callback_prefix": None,
 }
+TELEGRAM_ALLOWED_UPDATES = ("message", "callback_query")
 
 
 def build_auth() -> SessionAuth:
@@ -85,7 +86,8 @@ async def run_telegram_bot(stop_event: asyncio.Event) -> None:
             initialized = True
             await app.start()
             started = True
-            await app.updater.start_polling()
+            # Telegram reuses the token's previous allowed_updates filter when omitted.
+            await app.updater.start_polling(allowed_updates=TELEGRAM_ALLOWED_UPDATES)
             polling = True
             BOT_RUNTIME["running"] = True
             BOT_RUNTIME["last_error"] = None
